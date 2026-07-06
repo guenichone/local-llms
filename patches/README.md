@@ -37,3 +37,7 @@ cp patches/fcc/streaming.py $SITE_DIR/api/web_tools/streaming.py
 Saved as `patches/providers.zsh`. Installed at `~/.zshrc.d/providers.zsh` (sourced from `.zshrc`).
 
 Sets `MODEL="llamacpp/ornith-1.0-9b-Q5_K_M.gguf"` and `LLAMACPP_BASE_URL="http://127.0.0.1:8082/v1"` for fcc-server.
+
+### claude statusline — ~/.claude/statusline.sh
+
+Saved as `patches/statusline.sh`. Detects local models (llamacpp/ornith/gguf) and skips all cost/rate-limit/Max display — no point tracking spend on local inference.
