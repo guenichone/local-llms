@@ -197,6 +197,7 @@ Flag details:
 | `--cache-type-k/v q8_0` | KV cache quant → better precision (uses ~3.3 GB more VRAM vs q4_0) |
 | `-np 6 --kv-unified` | 6 parallel slots with unified KV cache |
 | `--reasoning-budget N` | Cap thinking tokens (default -1 = unlimited; 2048 recommended) |
+| `enableAgentSafetyClassifier` | Set `false` in `~/.claude/settings.json` to disable the safety classifier (circumvents timeout with slow local models) |
 
 #### Qwen3.6-27B MTP (port 8080)
 
