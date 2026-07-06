@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BRANCH="${1:-$(git branch --show-current)}"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+
+cd "$REPO"
+
+echo "Pushing branch '$BRANCH' to all remotes..."
+
+git remote -v | while read -r name url _; do
+  url="${url#https://}"  # strip https:// prefix
+  case "$name" in
+    origin)
+      echo "  → origin ($url)"
+      git push origin "$BRANCH"
+      ;;
+    pictet)
+      echo "  → pictet ($url)"
+      GH_TOKEN=$(gh auth token --hostname github.com --user eguenichon_pictet) \
+        git push pictet "$BRANCH"
+      ;;
+    *)
+      echo "  → $name ($url)"
+      git push "$name" "$BRANCH"
+      ;;
+  esac
+done
+
+echo "Done."
