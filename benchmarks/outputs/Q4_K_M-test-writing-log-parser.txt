@@ -1,0 +1,120 @@
+```python
+import pytest
+from parse_log_line import parse_log_line
+
+
+class TestParseLogLineValidLines:
+    """Tests for valid log lines that should parse successfully."""
+
+    def test_docstring_example_with_ip(self):
+        """Test the exact example from the function docstring."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user123 - Failed login from 192.168.1.1"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['level'] == 'ERROR'
+        assert result['timestamp'] == '2024-01-15 10:30:00'
+        assert result['user_id'] == 'user123'
+        assert result['message'] == 'Failed login'
+        assert result['ip_address'] == '192.168.1.1'
+
+    def test_valid_line_without_ip(self):
+        """Test a valid log line without an IP address."""
+        line = "[INFO] 2024-06-20 14:22:33 - admin - User logged in"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['level'] == 'INFO'
+        assert result['timestamp'] == '2024-06-20 14:22:33'
+        assert result['user_id'] == 'admin'
+        assert result['message'] == 'User logged in'
+        assert result['ip_address'] is None
+
+    def test_all_log_levels(self):
+        """Test each recognized log level."""
+        levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL', 'TRACE', 'FATAL']
+        for level in levels:
+            line = f"[{level}] 2024-01-01 00:00:00 - testuser - Test message"
+            result = parse_log_line(line)
+            assert result is not None, f"Failed to parse line with level: {level}"
+            assert result['level'] == level
+
+    def test_various_timestamps(self):
+        """Test lines with different timestamp formats."""
+        timestamps = [
+            "2024-01-15 10:30:00",
+            "2024-12-31 23:59:59",
+            "2024-01-01 00:00:00",
+            "2024-06-15 12:00:00",
+            "2025-03-20 08:45:30",
+            "2023-11-10 16:20:15",
+        ]
+        for ts in timestamps:
+            line = f"[INFO] {ts} - user1 - Test message"
+            result = parse_log_line(line)
+            assert result is not None, f"Failed to parse line with timestamp: {ts}"
+            assert result['timestamp'] == ts
+
+    def test_various_user_ids(self):
+        """Test lines with different user IDs."""
+        users = ['user123', 'admin', 'john', 'system', 'test_user', 'A', 'z', '12345']
+        for user in users:
+            line = f"[INFO] 2024-01-01 00:00:00 - {user} - Test message"
+            result = parse_log_line(line)
+            assert result is not None, f"Failed to parse line with user: {user}"
+            assert result['user_id'] == user
+
+    def test_various_ip_addresses(self):
+        """Test lines with different IP addresses."""
+        ips = ['192.168.1.1', '10.0.0.1', '172.16.254.1', '0.0.0.0', '255.255.255.255', '127.0.0.1']
+        for ip in ips:
+            line = f"[INFO] 2024-01-01 00:00:00 - user1 - Test message from {ip}"
+            result = parse_log_line(line)
+            assert result is not None, f"Failed to parse line with IP: {ip}"
+            assert result['ip_address'] == ip
+
+    def test_message_with_special_characters(self):
+        """Test messages containing special characters."""
+        messages = [
+            "Hello World!",
+            "Failed login from 192.168.1.1",
+            "User 'admin' logged in from 10.0.0.1",
+            "Error: connection timeout (retry 3)",
+            "Multiple words here",
+        ]
+        for msg in messages:
+            line = f"[INFO] 2024-01-01 00:00:00 - user1 - {msg}"
+            result = parse_log_line(line)
+            assert result is not None, f"Failed to parse line with message: {msg}"
+            assert result['message'] == msg
+
+    def test_message_without_ip(self):
+        """Test messages that don't end with 'from IP' pattern."""
+        messages = [
+            "System startup complete",
+            "User 'john' logged in",
+            "Configuration updated",
+            "Backup completed successfully",
+        ]
+        for msg in messages:
+            line = f"[INFO] 2024-01-01 00:00:00 - user1 - {msg}"
+            result = parse_log_line(line)
+            assert result is not None, f"Failed to parse line with message: {msg}"
+            assert result['ip_address'] is None
+
+
+class TestParseLogLineInvalidLines:
+    """Tests for invalid log lines that should return None."""
+
+    def test_empty_string(self):
+        """Test empty string input."""
+        assert parse_log_line("") is None
+
+    def test_whitespace_only(self):
+        """Test input that is only whitespace."""
+        assert parse_log_line("   ") is None
+        assert parse_log_line("\t\n") is None
+
+    def test_random_text(self):
+        """Test completely random text."""
+        assert parse_log_line("Hello World") is None
+        assert parse_log_line("This is not a log line") is None
+        assert parse_log_line("12345

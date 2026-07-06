@@ -1,0 +1,132 @@
+Here are the thread-safety bugs in this `TTLCache` class:
+
+---
+
+## Bug 1: TOCTOU Race in `get` — Check vs. Read/Delete
+
+**Severity:** HIGH
+
+Between `key in self._store` and `del self._store[key]`, another thread can interleave operations that corrupt state or raise exceptions.
+
+| Scenario | Thread A | Thread B |
+|----------|----------|----------|
+| **KeyError** | `key in self._store` → `True` | `del self._store[key]` (via `cleanup` or another `get`) |
+| **Data loss** | `key in self._store` → `True` | `self._store[key] = (new_value, new_expiry)` |
+| **Stale read** | `key in self._store` → `True` | `del self._store[key]` |
+
+**Fix:** Use a lock to make the check-then-act sequence atomic.
+
+```python
+def get(self, key):
+    with self._lock:
+        if key in self._store:
+            value, expiry = self._store[key]
+            if time.time() < expiry:
+                return value
+            del self._store[key]
+        return None
+```
+
+---
+
+## Bug 2: TOCTOU Race in `cleanup` — Snapshot vs. Mutation
+
+**Severity:** HIGH
+
+`list(self._store.keys())` snapshots the keys, but the loop mutates the dict. Concurrent threads can:
+
+- **Insert new keys** between the snapshot and deletion → they won't be cleaned up.
+- **Delete keys** during the loop → `KeyError` on `del self._store[key]`.
+
+**Fix:** Acquire the lock before iterating and deleting.
+
+```python
+def cleanup(self):
+    with self._lock:
+        now = time.time()
+        expired = [
+            key for key, (_, expiry) in self._store.items()
+            if now >= expiry
+        ]
+        for key in expired:
+            del self._store[key]
+```
+
+---
+
+## Bug 3: No Locking for `set`
+
+**Severity:** MEDIUM
+
+While CPython's GIL makes `dict[key] = value` atomic in practice, the operation is not logically atomic. Another thread could observe an inconsistent state (e.g., reading the dict during the assignment). Combined with Bug 1/2, this allows interleaving that corrupts TTL values.
+
+**Fix:** Acquire the lock around the assignment.
+
+```python
+def set(self, key, value):
+    with self._lock:
+        self._store[key] = (value, time.time() + self._ttl)
+```
+
+---
+
+## Bug 4: Inconsistent `size` Snapshot
+
+**Severity:** LOW
+
+`len(self._store)` returns a snapshot of the dict length. Between the `len()` call and the return, another thread could modify the dict, so the caller sees a stale count.
+
+**Fix:** Acquire the lock to ensure consistency.
+
+```python
+def size(self):
+    with self._lock:
+        return len(self._store)
+```
+
+---
+
+## Recommended Complete Fix
+
+```python
+import threading
+import time
+
+class TTLCache:
+    def __init__(self, ttl_seconds=60):
+        self._store = {}
+        self._ttl = ttl_seconds
+        self._lock = threading.Lock()
+    
+    def get(self, key):
+        with self._lock:
+            if key in self._store:
+                value, expiry = self._store[key]
+                if time.time() < expiry:
+                    return value
+                del self._store[key]
+            return None
+    
+    def set(self, key, value):
+        with self._lock:
+            self._store[key] = (value, time.time() + self._ttl)
+    
+    def cleanup(self):
+        with self._lock:
+            now = time.time()
+            expired = [
+                key for key, (_, expiry) in self._store.items()
+                if now >= expiry
+            ]
+            for key in expired:
+                del self._store[key]
+    
+    def size(self):
+        with self._lock:
+            return len(self._store)
+```
+
+**Summary of fixes:**
+- Add `threading.Lock()` to the constructor
+- Wrap every public method body in `with self._lock:`
+- In `cleanup`, compute expired keys *before* modifying the dict (avoid KeyError)

@@ -1,0 +1,108 @@
+```python
+from functools import lru_cache
+from typing import Optional
+
+
+def fibonacci(n: int) -> int:
+    """Return the *n*th Fibonacci number using memoization.
+
+    The Fibonacci sequence is defined as:
+        fib(0) = 0
+        fib(1) = 1
+        fib(k) = fib(k-1) + fib(k-2)  for k >= 2
+
+    Args:
+        n: Non-negative integer index of the Fibonacci number.
+
+    Returns:
+        The *n*th Fibonacci number.
+
+    Raises:
+        ValueError: If *n* is negative.
+
+    Examples:
+        >>> fibonacci(0)
+        0
+        >>> fibonacci(1)
+        1
+        >>> fibonacci(10)
+        55
+        >>> fibonacci(30)
+        832040
+    """
+    if n < 0:
+        raise ValueError(f"n must be a non-negative integer, got {n!r}")
+
+    @lru_cache(maxsize=None)
+    def _fib(k: int) -> int:
+        if k <= 1:
+            return k
+        return _fib(k - 1) + _fib(k - 2)
+
+    return _fib(n)
+
+
+def fibonacci_sequence(count: int) -> list[int]:
+    """Return a list containing the first *count* Fibonacci numbers.
+
+    The sequence starts with fib(0) = 0, fib(1) = 1, and continues
+    according to the standard Fibonacci recurrence.
+
+    Args:
+        count: Number of Fibonacci numbers to generate. Must be non-negative.
+
+    Returns:
+        A list of *count* Fibonacci numbers.
+
+    Raises:
+        ValueError: If *count* is negative.
+
+    Examples:
+        >>> fibonacci_sequence(0)
+        []
+        >>> fibonacci_sequence(1)
+        [0]
+        >>> fibonacci_sequence(5)
+        [0, 1, 1, 2, 3]
+        >>> fibonacci_sequence(10)
+        [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
+    """
+    if count < 0:
+        raise ValueError(f"count must be a non-negative integer, got {count!r}")
+
+    seq: list[int] = []
+    a, b = 0, 1
+    for _ in range(count):
+        seq.append(a)
+        a, b = b, a + b
+    return seq
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Demonstrable example
+# ─────────────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    print("Fibonacci values:")
+    for i in range(12):
+        print(f"  fib({i:2d}) = {fibonacci(i):>12,}")
+
+    print("\nFirst 10 Fibonacci numbers:")
+    print(fibonacci_sequence(10))
+
+    print("\nEdge case tests:")
+    print(f"  fibonacci(0) = {fibonacci(0)}")
+    print(f"  fibonacci(1) = {fibonacci(1)}")
+    print(f"  fibonacci(2) = {fibonacci(2)}")
+    print(f"  fibonacci(10) = {fibonacci(10)}")
+
+    print("\nError handling:")
+    try:
+        fibonacci(-1)
+    except ValueError as e:
+        print(f"  fibonacci(-1) → {e}")
+
+    try:
+        fibonacci_sequence(-3)
+    except ValueError as e:
+        print(f"  fibonacci_sequence(-3) → {e}")
+```

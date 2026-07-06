@@ -1,0 +1,156 @@
+```python
+"""
+Parse Nginx combined log format and compute request statistics.
+
+The Nginx combined log format looks like:
+
+    127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326 "http://www.example.com/start.html" "Mozilla/4.08 [en] (Win98; I ;Nav)"
+
+This module processes the log file line-by-line using generators to keep memory usage
+constant regardless of file size.
+"""
+
+import re
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, Generator, List, Optional, Tuple
+
+
+# Regex for Nginx combined log format
+# Fields:
+#   1  – client IP
+#   2  – ident
+#   3  – auth user
+#   4  – timestamp (e.g. 10/Oct/2000:13:55:36 -0700)
+#   5  – request line (e.g. GET /path HTTP/1.0)
+#   6  – status code
+#   7  – response size
+#   8  – referrer
+#   9  – user agent
+LOG_PATTERN = re.compile(
+    r'^(?P<ip>\S+)'
+    r' \S+'          # ident
+    r' \S+'          # auth user
+    r' \[(?P<timestamp>[^\]]+)\]'
+    r' "(?P<method>\S+)'
+    r' (?P<path>\S+)'
+    r' (?P<protocol>[^"]*)"'
+    r' (?P<status>\d+)'
+    r' (?P<size>\d+)'
+    r' "(?P<referrer>[^"]*)"'
+    r' "(?P<user_agent>[^"]*)"$'
+)
+
+
+def _parse_timestamp(timestamp: str) -> Optional[str]:
+    """Extract the hour (HH) from a Nginx timestamp string.
+
+    Returns None if the hour cannot be parsed.
+    """
+    # Expected: 10/Oct/2000:13:55:36 -0700
+    hour_match = re.search(r':(\d{2}):', timestamp)
+    return hour_match.group(1) if hour_match else None
+
+
+def _parse_log_line(line: str) -> Optional[Dict]:
+    """Parse a single log line into a dict of fields, or None on failure."""
+    line = line.strip()
+    if not line:
+        return None
+    match = LOG_PATTERN.match(line)
+    if not match:
+        return None
+    return match.groupdict()
+
+
+def _generate_parsed_entries(filepath: str) -> Generator[Dict, None, None]:
+    """Yield parsed log entries one at a time from *filepath*.
+
+    Memory-efficient: reads the file line-by-line without ever loading
+    the whole file into memory.
+    """
+    with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            entry = _parse_log_line(line)
+            if entry is not None:
+                yield entry
+
+
+def parse_nginx_log(filepath: str) -> Dict:
+    """Parse an Nginx combined log file and return aggregated statistics.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the Nginx log file.
+
+    Returns
+    -------
+    dict
+        Keys:
+            total_requests (int)
+            unique_ips (set[str])
+            status_code_counts (dict[str, int])
+            top_10_paths (list[tuple[str, int]])
+            hourly_request_counts (dict[str, int])
+    """
+    total_requests = 0
+    unique_ips: set = set()
+    status_code_counts: Dict[str, int] = defaultdict(int)
+    path_counts: Dict[str, int] = defaultdict(int)
+    hourly_request_counts: Dict[str, int] = defaultdict(int)
+
+    for entry in _generate_parsed_entries(filepath):
+        total_requests += 1
+        unique_ips.add(entry["ip"])
+        status_code_counts[entry["status"]] += 1
+        path_counts[entry["path"]] += 1
+        hour = _parse_timestamp(entry["timestamp"])
+        if hour is not None:
+            hourly_request_counts[hour] += 1
+
+    # Top 10 paths by request count (descending)
+    top_10_paths = sorted(path_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
+
+    return {
+        "total_requests": total_requests,
+        "unique_ips": unique_ips,
+        "status_code_counts": dict(status_code_counts),
+        "top_10_paths": top_10_paths,
+        "hourly_request_counts": dict(hourly_request_counts),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Usage example
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    # Create a sample log file for demonstration
+    sample_log = [
+        '192.168.1.1 - - [10/Oct/2023:08:15:30 +0000] "GET /index.html HTTP/1.1" 200 1024 "-" "Mozilla/5.0"',
+        '192.168.1.2 - - [10/Oct/2023:08:15:31 +0000] "POST /api/login HTTP/1.1" 200 512 "http://example.com/" "Mozilla/5.0"',
+        '192.168.1.1 - - [10/Oct/2023:09:20:00 +0000] "GET /index.html HTTP/1.1" 200 1024 "-" "Mozilla/5.0"',
+        '192.168.1.3 - - [10/Oct/2023:09:20:01 +0000] "GET /about HTTP/1.1" 301 0 "-" "Mozilla/5.0"',
+        '192.168.1.1 - - [10/Oct/2023:10:30:00 +0000] "GET /api/data HTTP/1.1" 500 128 "-" "curl/7.68.0"',
+        '192.168.1.4 - - [10/Oct/2023:10:30:05 +0000] "GET /index.html HTTP/1.1" 200 1024 "-" "Mozilla/5.0"',
+        '192.168.1.2 - - [10/Oct/2023:11:00:00 +0000] "GET /api/data HTTP/1.1" 200 2048 "-" "curl/7.68.0"',
+        '192.168.1.3 - - [10/Oct/2023:11:00:01 +0000] "DELETE /api/resource HTTP/1.1" 403 64 "-" "Mozilla/5.0"',
+        '192.168.1.1 - - [10/Oct/2023:12:00:00 +0000] "GET /index.html HTTP/1.1" 200 1024 "-" "Mozilla/5.0"',
+        '192.168.1.5 - - [10/Oct/2023:12:00:01 +0000] "GET /about HTTP/1.1" 200 512 "-" "Safari/16.0"',
+    ]
+
+    sample_path = Path("nginx_sample.log")
+    sample_path.write_text("\n".join(sample_log))
+
+    stats = parse_nginx_log(str(sample_path))
+
+    print(f"Total requests: {stats['total_requests']}")
+    print(f"Unique IPs:     {len(stats['unique_ips'])} → {sorted(stats['unique_ips'])}")
+    print("Status codes:   ", stats["status_code_counts"])
+    print("Top 10 paths:   ", stats["top_10_paths"])
+    print("Hourly counts:  ", stats["hourly_request_counts"])
+
+    # Cleanup
+    sample_path.unlink()
+```

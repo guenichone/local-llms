@@ -1,0 +1,300 @@
+```python
+import re
+from typing import Any, Dict, List, Tuple, Union
+
+
+class JSONValidator:
+    """Validates JSON data against a schema with support for multiple types and constraints."""
+
+    def __init__(self):
+        self._error_messages: List[str] = []
+
+    def validate(self, data: Any, schema: Dict[str, Any]) -> Tuple[bool, List[str]]:
+        """
+        Validate data against the given schema.
+
+        Args:
+            data: The data to validate.
+            schema: The JSON schema to validate against.
+
+        Returns:
+            A tuple of (is_valid, error_messages).
+        """
+        self._error_messages = []
+        self._validate_value(data, schema, path="")
+        return (len(self._error_messages) == 0, list(self._error_messages))
+
+    def _validate_value(self, data: Any, schema: Dict[str, Any], path: str) -> None:
+        """Recursively validate a value against its schema."""
+        if not isinstance(schema, dict):
+            self._error_messages.append(f"{path}: schema must be a dictionary")
+            return
+
+        expected_type = schema.get("type")
+        if expected_type is not None:
+            self._check_type(data, expected_type, path)
+
+        # Handle null type
+        if expected_type == "null":
+            if data is not None:
+                self._error_messages.append(f"{path}: expected null, got {type(data).__name__}")
+            return
+
+        # Handle constraints
+        if expected_type == "string":
+            self._validate_string_constraints(data, schema, path)
+        if expected_type == "number":
+            self._validate_number_constraints(data, schema, path)
+        if expected_type == "integer":
+            self._validate_integer_constraints(data, schema, path)
+        if expected_type == "array":
+            self._validate_array_constraints(data, schema, path)
+        if expected_type == "object":
+            self._validate_object_constraints(data, schema, path)
+
+        # Enum constraint applies to any type
+        if "enum" in schema:
+            self._validate_enum(data, schema, path)
+
+    def _check_type(self, data: Any, expected_type: str, path: str) -> None:
+        """Check if data matches the expected type."""
+        type_map = {
+            "string": str,
+            "integer": int,
+            "number": (int, float),
+            "boolean": bool,
+            "array": list,
+            "object": dict,
+            "null": type(None),
+        }
+
+        if expected_type not in type_map:
+            self._error_messages.append(f"{path}: unknown type '{expected_type}' in schema")
+            return
+
+        expected = type_map[expected_type]
+
+        # Special case: bool is a subclass of int in Python
+        if expected_type == "integer":
+            if isinstance(data, bool) or not isinstance(data, int):
+                self._error_messages.append(
+                    f"{path}: expected integer, got {type(data).__name__}"
+                )
+                return
+        elif expected_type == "number":
+            if isinstance(data, bool) or not isinstance(data, (int, float)):
+                self._error_messages.append(
+                    f"{path}: expected number, got {type(data).__name__}"
+                )
+                return
+        elif expected_type == "boolean":
+            if not isinstance(data, bool):
+                self._error_messages.append(
+                    f"{path}: expected boolean, got {type(data).__name__}"
+                )
+                return
+        elif expected_type == "null":
+            if data is not None:
+                self._error_messages.append(
+                    f"{path}: expected null, got {type(data).__name__}"
+                )
+                return
+        else:
+            if not isinstance(data, expected):
+                self._error_messages.append(
+                    f"{path}: expected {expected_type}, got {type(data).__name__}"
+                )
+                return
+
+    def _validate_string_constraints(self, data: Any, schema: Dict[str, Any], path: str) -> None:
+        """Validate string-specific constraints."""
+        if not isinstance(data, str):
+            return
+
+        min_length = schema.get("minLength")
+        if min_length is not None and len(data) < min_length:
+            self._error_messages.append(
+                f"{path}: string too short (minimum length is {min_length})"
+            )
+
+        max_length = schema.get("maxLength")
+        if max_length is not None and len(data) > max_length:
+            self._error_messages.append(
+                f"{path}: string too long (maximum length is {max_length})"
+            )
+
+        pattern = schema.get("pattern")
+        if pattern is not None:
+            if not re.match(pattern, data):
+                self._error_messages.append(
+                    f"{path}: string does not match pattern '{pattern}'"
+                )
+
+    def _validate_number_constraints(self, data: Any, schema: Dict[str, Any], path: str) -> None:
+        """Validate number-specific constraints."""
+        if isinstance(data, bool) or not isinstance(data, (int, float)):
+            return
+
+        minimum = schema.get("minimum")
+        if minimum is not None and data < minimum:
+            self._error_messages.append(
+                f"{path}: number too small (minimum is {minimum})"
+            )
+
+        maximum = schema.get("maximum")
+        if maximum is not None and data > maximum:
+            self._error_messages.append(
+                f"{path}: number too large (maximum is {maximum})"
+            )
+
+    def _validate_integer_constraints(self, data: Any, schema: Dict[str, Any], path: str) -> None:
+        """Validate integer-specific constraints."""
+        if isinstance(data, bool) or not isinstance(data, int):
+            return
+
+        minimum = schema.get("minimum")
+        if minimum is not None and data < minimum:
+            self._error_messages.append(
+                f"{path}: integer too small (minimum is {minimum})"
+            )
+
+        maximum = schema.get("maximum")
+        if maximum is not None and data > maximum:
+            self._error_messages.append(
+                f"{path}: integer too large (maximum is {maximum})"
+            )
+
+    def _validate_array_constraints(self, data: Any, schema: Dict[str, Any], path: str) -> None:
+        """Validate array-specific constraints."""
+        if not isinstance(data, list):
+            return
+
+        min_length = schema.get("minLength")
+        if min_length is not None and len(data) < min_length:
+            self._error_messages.append(
+                f"{path}: array too short (minimum length is {min_length})"
+            )
+
+        max_length = schema.get("maxLength")
+        if max_length is not None and len(data) > max_length:
+            self._error_messages.append(
+                f"{path}: array too long (maximum length is {max_length})"
+            )
+
+        items_schema = schema.get("items")
+        if items_schema is not None:
+            for i, item in enumerate(data):
+                self._validate_value(item, items_schema, f"{path}[{i}]")
+
+    def _validate_object_constraints(self, data: Any, schema: Dict[str, Any], path: str) -> None:
+        """Validate object-specific constraints."""
+        if not isinstance(data, dict):
+            return
+
+        required = schema.get("required", [])
+        for field in required:
+            if field not in data:
+                self._error_messages.append(f"{path}: missing required field '{field}'")
+
+        properties = schema.get("properties", {})
+        for field, field_schema in properties.items():
+            if field in data:
+                self._validate_value(data[field], field_schema, f"{path}.{field}")
+
+    def _validate_enum(self, data: Any, schema: Dict[str, Any], path: str) -> None:
+        """Validate enum constraint."""
+        allowed_values = schema.get("enum")
+        if allowed_values is None:
+            return
+
+        if data not in allowed_values:
+            allowed_str = ", ".join(repr(v) for v in allowed_values)
+            self._error_messages.append(
+                f"{path}: value must be one of [{allowed_str}]"
+            )
+
+
+# Example usage
+if __name__ == "__main__":
+    validator = JSONValidator()
+
+    # Example schema
+    schema = {
+        "type": "object",
+        "required": ["name", "age", "email"],
+        "properties": {
+            "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100,
+            },
+            "age": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 150,
+            },
+            "email": {
+                "type": "string",
+                "pattern": r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minLength": 1,
+                "maxLength": 10,
+            },
+            "status": {
+                "type": "string",
+                "enum": ["active", "inactive", "pending"],
+            },
+            "address": {
+                "type": "object",
+                "properties": {
+                    "street": {"type": "string", "minLength": 1},
+                    "city": {"type": "string", "minLength": 1},
+                },
+                "required": ["street", "city"],
+            },
+        },
+    }
+
+    # Valid data
+    valid_data = {
+        "name": "John Doe",
+        "age": 30,
+        "email": "john.doe@example.com",
+        "tags": ["python", "coding"],
+        "status": "active",
+        "address": {
+            "street": "123 Main St",
+            "city": "New York",
+        },
+    }
+
+    is_valid, errors = validator.validate(valid_data, schema)
+    print("Valid data:")
+    print(f"  is_valid: {is_valid}")
+    if errors:
+        print(f"  errors: {errors}")
+    else:
+        print("  All validations passed!")
+
+    # Invalid data
+    invalid_data = {
+        "name": "",
+        "age": -5,
+        "email": "invalid-email",
+        "tags": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        "status": "unknown",
+        "address": {
+            "street": "123 Main St",
+        },
+    }
+
+    is_valid, errors = validator.validate(invalid_data, schema)
+    print("\nInvalid data:")
+    print(f"  is_valid: {is_valid}")
+    if errors:
+        for error in errors:
+            print(f"  - {error}")
+```

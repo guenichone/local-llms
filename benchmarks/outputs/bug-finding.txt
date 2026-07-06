@@ -1,0 +1,82 @@
+# Bug Analysis: `merge_intervals`
+
+After thorough review, here are the bugs found in the function:
+
+---
+
+## Bug 1 — Inconsistent return type for `None` input
+
+| | |
+|---|---|
+| **Line** | 4 |
+| **Severity** | **Medium** |
+| **Code** | `if not intervals: return intervals` |
+| **Issue** | When `intervals` is `None`, the function returns `None` instead of an empty list. This is inconsistent with the function's documented behavior (it should always return a list). It also makes downstream code harder to reason about. |
+| **Fix** | Return a new empty list: `return []` |
+
+---
+
+## Bug 2 — Mutates input list in place
+
+| | |
+|---|---|
+| **Line** | 5 |
+| **Severity** | **Low** |
+| **Code** | `intervals.sort(key=lambda x: x[0])` |
+| **Issue** | `list.sort()` sorts the list in place. Callers who pass in their own list will have it reordered, which is an unexpected side effect. This violates the principle of least surprise. |
+| **Fix** | Sort a copy: `sorted_intervals = sorted(intervals, key=lambda x: x[0])` and use that variable throughout. |
+
+---
+
+## Bug 3 — Missing guard for empty input after line 4
+
+| | |
+|---|---|
+| **Line** | 7 |
+| **Severity** | **Low** |
+| **Code** | `merged = [intervals[0]]` |
+| **Issue** | If `intervals` is an empty list, `intervals[0]` raises `IndexError`. While the `if not intervals` check on line 4 should catch this, the guard is fragile: if someone later changes that check or if it's ever bypassed (e.g., through inheritance or monkey-patching), the error becomes hard to trace. |
+| **Fix** | Replace with an explicit empty-list check: `if not intervals: return []`. |
+
+---
+
+## Corrected Version
+
+```python
+def merge_intervals(intervals):
+    '''Merge overlapping intervals.
+    
+    Args:
+        intervals: A list of [start, end] pairs.
+    
+    Returns:
+        A new list of non-overlapping merged intervals.
+    '''
+    if not intervals:
+        return []
+
+    # Sort a copy so the original list is not mutated
+    sorted_intervals = sorted(intervals, key=lambda x: x[0])
+    merged = [sorted_intervals[0]]
+
+    for i in range(1, len(sorted_intervals)):
+        current = sorted_intervals[i]
+        last = merged[-1]
+
+        if current[0] <= last[1]:
+            last[1] = max(last[1], current[1])
+        else:
+            merged.append(current)
+
+    return merged
+```
+
+---
+
+## Summary Table
+
+| # | Line | Severity | Root Cause |
+|---|------|----------|------------|
+| 1 | 4 | Medium | Returns `None` for `None` input instead of `[]` |
+| 2 | 5 | Low | Mutates caller's input list in place |
+| 3 | 7 | Low | Relies on upstream guard; `IndexError` if guard is ever bypassed |

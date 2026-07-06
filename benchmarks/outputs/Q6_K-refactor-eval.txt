@@ -1,0 +1,359 @@
+```python
+from __future__ import annotations
+
+import ast
+import json
+from dataclasses import dataclass
+from typing import Any, List, Optional
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+_DEFAULT_MULT = 1
+_DEFAULT_FILTER = "True"
+
+
+# ---------------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ProcessDataRequest:
+    """Structured, validated input for processing data."""
+
+    expr: str
+    filter_expr: Optional[str] = None
+    mult: int = _DEFAULT_MULT
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.expr, str) or not self.expr.strip():
+            raise ValueError("expr must be a non-empty string")
+        if self.filter_expr is not None and not isinstance(self.filter_expr, str):
+            raise TypeError("filter_expr must be a string or None")
+        if not isinstance(self.mult, int) or self.mult < 0:
+            raise ValueError("mult must be a non-negative integer")
+
+
+# ---------------------------------------------------------------------------
+# Safe expression evaluator
+# ---------------------------------------------------------------------------
+
+class SafeExpressionEvaluator:
+    """Evaluates simple numeric expressions by parsing with the `ast` module."""
+
+    _ALLOWED_NODES = {
+        ast.Expression,
+        ast.List,
+        ast.Tuple,
+        ast.Constant,
+        ast.NameConstant,
+        ast.Num,
+        ast.Str,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Compare,
+        ast.BoolOp,
+        ast.IfExp,
+        ast.Call,
+    }
+
+    _ALLOWED_OPS = {
+        ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod,
+        ast.Pow, ast.Not, ast.Invert,
+        ast.And, ast.Or,
+        ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Is, ast.IsNot,
+        ast.In, ast.NotIn,
+    }
+
+    _ALLOWED_FUNCS = {"abs", "min", "max", "sum", "len", "int", "float", "str", "round"}
+
+    _WHITELISTED_NAMES = {"True", "False", "None", "list", "tuple", "set", "dict"}
+
+    @staticmethod
+    def evaluate(expression: str, local_vars: Optional[dict[str, Any]] = None) -> Any:
+        """Safely evaluate a simple Python expression.
+
+        Parameters
+        ----------
+        expression : str
+            The Python expression string.
+        local_vars : dict, optional
+            Additional local variables available during evaluation.
+
+        Returns
+        -------
+        Any
+            The evaluated result.
+
+        Raises
+        ------
+        ValueError
+            If the expression is syntactically invalid or uses disallowed constructs.
+        """
+        expression = expression.strip()
+        if not expression:
+            raise ValueError("Expression must not be empty")
+
+        try:
+            tree = ast.parse(expression, mode="eval")
+        except SyntaxError as exc:
+            raise ValueError(f"Invalid expression syntax: {exc}") from exc
+
+        SafeExpressionEvaluator._validate_node(tree, path="")
+
+        try:
+            result = ast.literal_eval(expression)
+        except (ValueError, SyntaxError) as exc:
+            raise ValueError(f"Expression cannot be evaluated safely: {exc}") from exc
+
+        return result
+
+    @staticmethod
+    def _validate_node(node: ast.AST, path: str) -> None:
+        """Recursively validate that an AST node only uses allowed constructs."""
+        node_type = type(node)
+        if node_type not in SafeExpressionEvaluator._ALLOWED_NODES:
+            raise ValueError(
+                f"Disallowed AST node {node_type.__name__} at {path}."
+            )
+
+        if node_type in (ast.List, ast.Tuple):
+            for i, elt in enumerate(node.elts):
+                SafeExpressionEvaluator._validate_node(
+                    elt, path=f"{path}[{i}]"
+                )
+        elif node_type in (ast.BinOp, ast.UnaryOp, ast.Compare):
+            SafeExpressionEvaluator._validate_node(
+                node.op, path=f"{path}.op"
+            )
+        elif node_type is ast.BoolOp:
+            SafeExpressionEvaluator._validate_node(
+                node.op, path=f"{path}.op"
+            )
+        elif node_type is ast.Call:
+            if node.func.id not in SafeExpressionEvaluator._ALLOWED_FUNCS:
+                raise ValueError(
+                    f"Disallowed function call: {node.func.id} at {path}."
+                )
+            for arg in node.args:
+                SafeExpressionEvaluator._validate_node(arg, path=f"{path}.args")
+            for kw in node.keywords:
+                SafeExpressionEvaluator._validate_node(kw.value, path=f"{path}.keywords")
+        elif node_type is ast.Name:
+            if (
+                node.id not in SafeExpressionEvaluator._WHITELISTED_NAMES
+                and node.id not in ("x",)
+            ):
+                raise ValueError(
+                    f"Disallowed variable name: '{node.id}' at {path}."
+                )
+        elif node_type is ast.Constant:
+            if not isinstance(node.value, (int, float, bool, str, type(None))):
+                raise ValueError(
+                    f"Disallowed constant type {type(node.value).__name__} "
+                    f"at {path}."
+                )
+        elif node_type is ast.Subscript:
+            SafeExpressionEvaluator._validate_node(
+                node.slice, path=f"{path}.slice"
+            )
+        elif node_type is ast.Index:
+            SafeExpressionEvaluator._validate_node(
+                node.value, path=f"{path}.value"
+            )
+        elif node_type is ast.IfExp:
+            SafeExpressionEvaluator._validate_node(
+                node.test, path=f"{path}.test"
+            )
+        elif node_type is ast.Slice:
+            SafeExpressionEvaluator._validate_node(
+                node.lower, path=f"{path}.lower"
+            )
+            SafeExpressionEvaluator._validate_node(
+                node.upper, path=f"{path}.upper"
+            )
+            if node.step is not None:
+                SafeExpressionEvaluator._validate_node(
+                    node.step, path=f"{path}.step"
+                )
+
+
+# ---------------------------------------------------------------------------
+# Main processing logic
+# ---------------------------------------------------------------------------
+
+def _convert_to_numeric(value: Any) -> float:
+    """Convert a value to numeric form for safe comparison."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _evaluate_filter_expression(
+    filter_expr: str, x: List[float]
+) -> bool:
+    """Evaluate a filter expression that may reference the variable `x`.
+
+    Replaces occurrences of the variable name `x` with the current element value
+    and evaluates the resulting expression safely.
+
+    Parameters
+    ----------
+    filter_expr : str
+        The filter expression string.
+    x : list[float]
+        The list of numeric values to filter against.
+
+    Returns
+    -------
+    bool
+        Whether the filter expression evaluates to a truthy value.
+
+    Raises
+    ------
+    ValueError
+        If the filter expression is invalid.
+    """
+    if not filter_expr.strip():
+        raise ValueError("Filter expression must not be empty")
+
+    element = _convert_to_numeric(x[0]) if x else 0.0
+    safe_expr = filter_expr.replace("x", str(element))
+    SafeExpressionEvaluator.evaluate(safe_expr)
+    return bool(safe_expr)
+
+
+def process_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Process a data dictionary containing an expression, optional filter, and multiplier.
+
+    Parameters
+    ----------
+    data : dict
+        A dictionary with the following keys:
+        - 'expr' (str): A Python expression that evaluates to a list of values.
+        - 'filter' (str, optional): A filter expression that may reference `x`.
+        - 'mult' (int, optional): A multiplier for matching values (default: 1).
+
+    Returns
+    -------
+    dict
+        A dictionary containing:
+        - 'result' (list[float]): The processed numeric results.
+        - 'success' (bool): Whether processing succeeded.
+        - 'error' (str, optional): Error message if processing failed.
+
+    Raises
+    ------
+    TypeError
+        If the input is not a dictionary.
+    """
+    if not isinstance(data, dict):
+        raise TypeError("Input must be a dictionary")
+
+    expr_raw = data.get("expr")
+    if expr_raw is None:
+        raise ValueError("Missing required key: 'expr'")
+
+    filter_raw = data.get("filter", _DEFAULT_FILTER)
+    mult = data.get("mult", _DEFAULT_MULT)
+
+    try:
+        result = _process_internal(expr_raw, filter_raw, mult)
+    except (ValueError, TypeError) as exc:
+        return {"result": [], "success": False, "error": str(exc)}
+
+    return {"result": result, "success": True}
+
+
+def _process_internal(
+    expr: str, filter_expr: str, mult: int
+) -> List[float]:
+    """Internal processing logic.
+
+    Parameters
+    ----------
+    expr : str
+        The expression to evaluate to a list of values.
+    filter_expr : str
+        The filter expression.
+    mult : int
+        The multiplier.
+
+    Returns
+    -------
+    list[float]
+        The processed results.
+    """
+    try:
+        raw_values = SafeExpressionEvaluator.evaluate(expr)
+    except ValueError as exc:
+        raise ValueError(f"Failed to evaluate expression: {exc}") from exc
+
+    if not isinstance(raw_values, (list, tuple)):
+        raise ValueError(
+            f"Expression must return a list or tuple, got {type(raw_values).__name__}"
+        )
+
+    x = [_convert_to_numeric(v) for v in raw_values]
+
+    if not x:
+        return []
+
+    try:
+        filtered = [v for v in x if _evaluate_filter_expression(filter_expr, [v])]
+    except ValueError as exc:
+        raise ValueError(f"Failed to evaluate filter expression: {exc}") from exc
+
+    return [v * mult for v in filtered]
+
+
+# ---------------------------------------------------------------------------
+# Convenience wrapper (legacy-style)
+# ---------------------------------------------------------------------------
+
+def process_data_compat(data: dict[str, Any]) -> str:
+    """Legacy compatibility wrapper.
+
+    Converts the structured output of `process_data` to a JSON string.
+
+    Parameters
+    ----------
+    data : dict
+        A dictionary with the same structure as expected by `process_data`.
+
+    Returns
+    -------
+    str
+        JSON-serialized result string.
+    """
+    result = process_data(data)
+    return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point (optional)
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    """Run from the command line with a JSON input."""
+    import sys
+
+    if len(sys.argv) < 2:
+        print("Usage: python -m module_name <input.json>", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        with open(sys.argv[1]) as fh:
+            data = json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        print(f"Error reading input: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    result = process_data(data)
+    print(json.dumps(result, indent=2))
+
+
+if __name__ == "__main__":
+    main()
+```

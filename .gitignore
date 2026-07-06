@@ -1,0 +1,4 @@
+.claude/settings.local.json
+.claude/get-openrouter-key.sh
+.claude/or-proxy.*
+.env

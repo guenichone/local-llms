@@ -1,0 +1,148 @@
+```python
+"""Safe data processing module with expression evaluation and filtering."""
+
+import ast
+from typing import Any, Dict, List, Union
+
+
+class FilterEvaluator:
+    """Safely evaluates filter expressions using AST parsing.
+
+    Only allows safe operations (arithmetic, comparisons, logical operators).
+    Prevents dangerous operations like eval(), exec(), etc.
+    """
+
+    UNSAFE_FUNCTIONS = {'eval', 'exec', 'compile', 'getattr', 'setattr', 'delattr'}
+    UNSAFE_ATTRIBUTES = {'exec', 'eval'}
+
+    def __init__(self, expression: str) -> None:
+        """Initialize with a filter expression string.
+
+        Args:
+            expression: String expression like "x > 5" or "x % 2 == 0"
+
+        Raises:
+            ValueError: If expression is invalid or contains unsafe operations
+        """
+        self.expression = expression
+        self._validate()
+
+    def _validate(self) -> None:
+        """Validate expression for syntax and safety."""
+        try:
+            tree = ast.parse(self.expression, mode='eval')
+        except SyntaxError as e:
+            raise ValueError(f"Invalid filter expression syntax: {e}") from e
+
+        self._check_unsafe_nodes(tree.body)
+
+    @staticmethod
+    def _check_unsafe_nodes(node: ast.AST) -> None:
+        """Recursively check AST nodes for unsafe operations."""
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in FilterEvaluator.UNSAFE_FUNCTIONS:
+                raise ValueError(f"Unsafe operation detected: {node.func.id}()")
+            if isinstance(node.func, ast.Attribute) and node.func.attr in FilterEvaluator.UNSAFE_ATTRIBUTES:
+                raise ValueError(f"Unsafe operation detected: .{node.func.attr}()")
+
+        if isinstance(node, ast.Attribute):
+            if isinstance(node.value, ast.Name) and node.value.id in ('__builtins__', '__import__'):
+                raise ValueError("Access to builtins not allowed")
+
+        for child in ast.iter_child_nodes(node):
+            FilterEvaluator._check_unsafe_nodes(child)
+
+    def evaluate(self, value: Any) -> bool:
+        """Evaluate the expression with the given value.
+
+        Args:
+            value: The value to substitute for 'x' in the expression
+
+        Returns:
+            Boolean result of the expression evaluation
+
+        Raises:
+            ValueError: If evaluation fails or expression is unsafe
+        """
+        try:
+            compiled = compile(self._ast, '<filter>', 'eval')
+            result = eval(compiled, {"__builtins__": {}}, {"x": value})
+            return bool(result)
+        except Exception as e:
+            raise ValueError(
+                f"Error evaluating filter expression '{self.expression}': {e}"
+            ) from e
+
+
+def process_data(d: Dict[str, Any]) -> List[Any]:
+    """Process data based on expression, filter, and multiplier.
+
+    Args:
+        d: Dictionary containing:
+            - 'expr': Expression to evaluate (should return a list/sequence)
+            - 'filter': Optional filter expression string (e.g., "x > 5")
+            - 'mult': Optional multiplier for matching items (default: 1)
+
+    Returns:
+        List of processed items
+
+    Raises:
+        TypeError: If input types are incorrect
+        ValueError: If any input is invalid or contains unsafe operations
+
+    Example:
+        >>> data = {
+        ...     "expr": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        ...     "filter": "x > 5",
+        ...     "mult": 2
+        ... }
+        >>> process_data(data)
+        [12, 14, 16, 18, 20]
+    """
+    # Validate input type
+    if not isinstance(d, dict):
+        raise TypeError("Input must be a dictionary")
+
+    # Check for required fields
+    if 'expr' not in d:
+        raise ValueError("Missing required field: 'expr'")
+
+    # Parse the expression safely using ast.literal_eval
+    try:
+        expr_result = ast.literal_eval(d['expr'])
+    except (ValueError, SyntaxError) as e:
+        raise ValueError(f"Invalid expression: {e}") from e
+
+    if not isinstance(expr_result, (list, tuple)):
+        raise TypeError(
+            f"Expression must return a list or tuple, got {type(expr_result).__name__}"
+        )
+
+    x = list(expr_result)
+
+    # Parse the filter expression
+    y = d.get('filter', 'True')
+    if not isinstance(y, str):
+        raise TypeError("Filter must be a string expression")
+
+    filter_expr = FilterEvaluator(y)
+
+    # Process items
+    result: List[Any] = []
+    for i, item in enumerate(x):
+        try:
+            if filter_expr.evaluate(item):
+                multiplier = d.get('mult', 1)
+                if not isinstance(multiplier, (int, float)):
+                    raise TypeError(
+                        f"Multiplier must be a number, got {type(multiplier).__name__}"
+                    )
+                result.append(item * multiplier)
+        except Exception as e:
+            raise ValueError(f"Error processing item {i}: {e}") from e
+
+    return result
+
+
+# Example usage
+if __name__ == "__main

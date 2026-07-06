@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""Fetch a YouTube video transcript from the CLI.
+
+Usage:
+  yt-transcript <video-id-or-url>
+  yt-transcript <video-id-or-url> --lang es
+  yt-transcript <video-id-or-url> --text  (plain text, no timestamps)
+"""
+
+import sys
+import re
+import argparse
+
+from youtube_transcript_api._api import YouTubeTranscriptApi
+
+
+def extract_video_id(url_or_id: str) -> str:
+    patterns = [
+        r"(?:v=|/v/|youtu\.be/)([A-Za-z0-9_-]{11})",
+        r"^([A-Za-z0-9_-]{11})$",
+    ]
+    for p in patterns:
+        m = re.search(p, url_or_id)
+        if m:
+            return m.group(1)
+    sys.exit(f"error: could not parse video ID from '{url_or_id}'")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Fetch a YouTube transcript")
+    parser.add_argument("video", help="YouTube video ID or URL")
+    parser.add_argument("--lang", default="en", help="Language code (default: en)")
+    parser.add_argument("--text", action="store_true", help="Plain text only, no timestamps")
+    args = parser.parse_args()
+
+    vid = extract_video_id(args.video)
+    api = YouTubeTranscriptApi()
+
+    try:
+        transcript = api.fetch(vid, languages=[args.lang])
+    except Exception as e:
+        sys.exit(f"error fetching transcript: {e}")
+
+    for snippet in transcript:
+        if args.text:
+            print(snippet.text)
+        else:
+            print(f"[{snippet.start:.1f}s] {snippet.text}")
+
+
+if __name__ == "__main__":
+    main()

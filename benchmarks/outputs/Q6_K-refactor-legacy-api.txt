@@ -1,0 +1,170 @@
+```python
+# app/main.py
+from __future__ import annotations
+
+import asyncio
+import sqlite3
+from contextlib import asynccontextmanager
+from typing import Generator, Optional
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
+
+# ─── Pydantic Models ───────────────────────────────────────────────────────────
+
+class UserCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100, examples=["Alice"])
+    email: str = Field(..., min_length=1, max_length=255, examples=["alice@example.com"])
+
+    @field_validator("name")
+    @classmethod
+    def name_must_not_be_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("name cannot be blank")
+        return v.strip()
+
+    @field_validator("email")
+    @classmethod
+    def email_must_not_be_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("email cannot be blank")
+        return v.strip()
+
+
+class UserResponse(BaseModel):
+    id: Optional[int] = None
+    name: str
+    email: str
+
+
+class PageQuery(BaseModel):
+    page: int = Field(..., ge=1, default=1, description="Page number (1-indexed)")
+    limit: int = Field(..., ge=1, le=100, default=20, description="Items per page (max 100)")
+
+
+class PaginatedResponse(BaseModel):
+    items: list[UserResponse]
+    page: int
+    limit: int
+    total: int
+    has_next: bool
+    has_prev: bool
+
+
+# ─── Async Database Wrapper ────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def get_db() -> Generator[sqlite3.Connection, None, None]:
+    """Async-friendly DB connection via a sync worker."""
+    conn = sqlite3.connect("app.db")
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+# ─── FastAPI App ───────────────────────────────────────────────────────────────
+
+app = FastAPI(title="Users API", version="1.0.0")
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    """Ensure the users table exists at startup."""
+    conn = sqlite3.connect("app.db")
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                email TEXT NOT NULL UNIQUE
+            )
+            """
+        )
+    finally:
+        conn.close()
+
+
+@app.get("/api/v1/users", response_model=PaginatedResponse)
+async def list_users(
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(20, ge=1, le=100, description="Items per page"),
+):
+    try:
+        async with get_db() as conn:
+            c = conn.cursor()
+
+            # Count total
+            c.execute("SELECT COUNT(*) FROM users")
+            total = c.fetchone()[0]
+
+            offset = (page - 1) * limit
+            c.execute(
+                "SELECT id, name, email FROM users LIMIT ? OFFSET ?",
+                (limit, offset),
+            )
+            rows = c.fetchall()
+
+            items = [
+                UserResponse(id=r["id"], name=r["name"], email=r["email"])
+                for r in rows
+            ]
+
+            has_next = offset + limit < total
+            has_prev = page > 1
+
+        return PaginatedResponse(
+            items=items,
+            page=page,
+            limit=limit,
+            total=total,
+            has_next=has_next,
+            has_prev=has_prev,
+        )
+
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/v1/users", response_model=UserResponse, status_code=201)
+async def create_user(user: UserCreate):
+    try:
+        async with get_db() as conn:
+            c = conn.cursor()
+            c.execute(
+                "INSERT INTO users (name, email) VALUES (?, ?)",
+                (user.name, user.email),
+            )
+            conn.commit()
+
+            # Retrieve the newly created row
+            c.execute(
+                "SELECT id, name, email FROM users WHERE id = ?",
+                (c.lastrowid,),
+            )
+            row = c.fetchone()
+
+        return UserResponse(id=row["id"], name=row["name"], email=row["email"])
+
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="email already exists")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+```
+
+### Key Improvements
+
+| Concern | Flask Original | FastAPI Refactor |
+|---------|---------------|------------------|
+| **Validation** | None | Pydantic models with constraints & validators |
+| **SQL Injection** | f-strings | Parameterized queries (`?` placeholders) |
+| **DB Access** | Inline in handler | Async DI via `@asynccontextmanager` |
+| **Error Handling** | No try/except | Explicit handlers for IntegrityError, generic |
+| **Pagination** | Manual query | PaginatedResponse model with `total`, `has_next`, `has_prev` |
+| **Async** | No | `async` handlers + `async with` DB context |
+| **Status Codes** | Hardcoded | 201 for create, 400/409/500 for errors |
+| **Security** | No input sanitization | Pydantic strips & validates input |
+| **Startup** | None | Table creation on startup |

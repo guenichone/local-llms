@@ -1,0 +1,83 @@
+{
+  "model": "/home/barrak/models/ornith-1.0-9b/ornith-1.0-9b-Q4_K_M.gguf",
+  "timestamp": "2026-07-05T23:16:14.662863",
+  "total_tasks": 6,
+  "completed": 6,
+  "total_prompt_tokens": 1039,
+  "total_output_tokens": 15574,
+  "total_time_seconds": 133.72,
+  "results": [
+    {
+      "task": "code-gen-fibonacci",
+      "category": "code_generation",
+      "description": "Generate memoized Fibonacci with good API design",
+      "ttft": 10.66,
+      "elapsed": 10.66,
+      "gen_time": 0.0,
+      "prompt_tokens": 104,
+      "output_tokens": 1265,
+      "tokens_per_second": 11816914.4,
+      "output_len": 3178
+    },
+    {
+      "task": "code-gen-json-validator",
+      "category": "code_generation",
+      "description": "Build a JSON schema validator class",
+      "ttft": 26.6,
+      "elapsed": 26.6,
+      "gen_time": 0.0,
+      "prompt_tokens": 109,
+      "output_tokens": 3203,
+      "tokens_per_second": 26655467.7,
+      "output_len": 12402
+    },
+    {
+      "task": "bug-finding",
+      "category": "debugging",
+      "description": "Find and fix bugs in given code",
+      "ttft": 11.67,
+      "elapsed": 11.67,
+      "gen_time": 0.0,
+      "prompt_tokens": 186,
+      "output_tokens": 1387,
+      "tokens_per_second": 2049136.9,
+      "output_len": 2505
+    },
+    {
+      "task": "refactor-eval",
+      "category": "refactoring",
+      "description": "Refactor unsafe eval-based code",
+      "ttft": 34.82,
+      "elapsed": 34.82,
+      "gen_time": 0.0,
+      "prompt_tokens": 168,
+      "output_tokens": 4096,
+      "tokens_per_second": 10046707.1,
+      "output_len": 0
+    },
+    {
+      "task": "test-writing",
+      "category": "testing",
+      "description": "Write comprehensive pytest tests",
+      "ttft": 35.62,
+      "elapsed": 35.62,
+      "gen_time": 0.0,
+      "prompt_tokens": 349,
+      "output_tokens": 4096,
+      "tokens_per_second": 14621165.3,
+      "output_len": 9180
+    },
+    {
+      "task": "code-gen-api-handler",
+      "category": "code_generation",
+      "description": "Build a small API endpoint handler",
+      "ttft": 14.33,
+      "elapsed": 14.33,
+      "gen_time": 0.0,
+      "prompt_tokens": 123,
+      "output_tokens": 1527,
+      "tokens_per_second": 8797667.9,
+      "output_len": 5304
+    }
+  ]
+}

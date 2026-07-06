@@ -1,0 +1,332 @@
+```python
+import time
+import threading
+import pytest
+from token_bucket import TokenBucket
+
+
+@pytest.fixture
+def bucket():
+    """Create a TokenBucket with moderate rate and capacity for basic tests."""
+    return TokenBucket(rate=10.0, capacity=5)
+
+
+@pytest.fixture
+def slow_bucket():
+    """Create a TokenBucket with a slow rate for timing tests."""
+    return TokenBucket(rate=0.1, capacity=10)
+
+
+@pytest.fixture
+def zero_rate_bucket():
+    """Create a TokenBucket with zero rate."""
+    return TokenBucket(rate=0.0, capacity=5)
+
+
+@pytest.fixture
+def empty_bucket():
+    """Create a TokenBucket that starts empty."""
+    return TokenBucket(rate=10.0, capacity=5)
+
+
+class TestBasicConsumption:
+    """Test basic token consumption behavior."""
+
+    def test_consume_tokens_success(self, bucket):
+        """Verify that consuming tokens within capacity succeeds."""
+        assert bucket.consume(2) is True
+        assert bucket.tokens == 3
+
+    def test_consume_tokens_exact_capacity(self, bucket):
+        """Verify consuming exactly the capacity succeeds."""
+        assert bucket.consume(5) is True
+        assert bucket.tokens == 0
+
+    def test_consume_tokens_empty_bucket(self, empty_bucket):
+        """Verify consuming tokens when bucket is empty fails."""
+        assert bucket.consume(1) is False
+
+    def test_consume_more_than_capacity(self, bucket):
+        """Verify consuming more tokens than capacity fails."""
+        assert bucket.consume(10) is False
+
+    def test_consume_zero_tokens(self, bucket):
+        """Verify consuming zero tokens succeeds (no-op)."""
+        assert bucket.consume(0) is True
+        assert bucket.tokens == 5
+
+
+class TestRefillTiming:
+    """Test token refill timing behavior."""
+
+    def test_tokens_refill_over_time(self, slow_bucket):
+        """Verify tokens refill at the expected rate."""
+        # Start with 5 tokens
+        assert slow_bucket.tokens == 5
+        # Wait 10 seconds at 0.1 rate = 1 token
+        time.sleep(10)
+        assert slow_bucket.tokens >= 6.0
+
+    def test_tokens_refill_cap_at_capacity(self, slow_bucket):
+        """Verify tokens don't exceed capacity during refill."""
+        # Start with 1 token, wait 50 seconds at 0.1 rate = 5 tokens
+        assert slow_bucket.tokens == 1
+        time.sleep(50)
+        assert slow_bucket.tokens == slow_bucket.capacity
+
+    def test_refill_with_elapsed_time(self, bucket):
+        """Verify tokens are calculated based on elapsed time."""
+        # Manually set last_refill to simulate old bucket
+        original = bucket.last_refill
+        time.sleep(0.5)  # 5 tokens at rate=10
+        bucket.last_refill = time.monotonic() - 0.5
+        assert bucket.consume(3) is True
+        assert bucket.tokens >= 1.0
+
+    def test_no_refill_without_time_passage(self, bucket):
+        """Verify tokens don't increase without time passing."""
+        assert bucket.tokens == 5
+        # No time passes, should stay at 5
+        assert bucket.consume(1) is True
+        assert bucket.tokens == 4
+
+
+class TestCapacityLimits:
+    """Test that the bucket respects its capacity limits."""
+
+    def test_capacity_not_exceeded(self, slow_bucket):
+        """Verify that tokens never exceed capacity."""
+        assert slow_bucket.tokens == 10
+        # Wait 100 seconds at 0.1 rate = 10 tokens
+        time.sleep(100)
+        assert slow_bucket.tokens == slow_bucket.capacity
+
+    def test_capacity_not_exceeded_during_consume(self, bucket):
+        """Verify consume doesn't exceed capacity."""
+        assert bucket.consume(3) is True
+        assert bucket.tokens == 2
+        assert bucket.consume(3) is False
+        assert bucket.tokens == 2
+
+
+class TestEmptyBucket:
+    """Test behavior when the bucket is empty."""
+
+    def test_empty_bucket_rejects_consumption(self, empty_bucket):
+        """Verify empty bucket rejects any token consumption."""
+        assert empty_bucket.consume(1) is False
+        assert empty_bucket.consume(10) is False
+
+    def test_empty_bucket_allows_refill(self, empty_bucket):
+        """Verify empty bucket allows refill over time."""
+        assert empty_bucket.tokens == 0
+        time.sleep(0.5)  # 5 tokens at rate=10
+        assert empty_bucket.tokens >= 5.0
+
+    def test_empty_bucket_consume_zero(self, empty_bucket):
+        """Verify consuming zero tokens from empty bucket succeeds."""
+        assert empty_bucket.consume(0) is True
+        assert empty_bucket.tokens == 0
+
+
+class TestZeroRate:
+    """Test edge cases with zero rate."""
+
+    def test_zero_rate_no_refill(self, zero_rate_bucket):
+        """Verify zero rate bucket never refills."""
+        assert zero_rate_bucket.tokens == 5
+        time.sleep(1)
+        assert zero_rate_bucket.tokens == 5
+
+    def test_zero_rate_consume_success(self, zero_rate_bucket):
+        """Verify zero rate bucket allows consumption."""
+        assert zero_rate_bucket.consume(3) is True
+        assert zero_rate_bucket.tokens == 2
+
+    def test_zero_rate_consume_exceeds_capacity(self, zero_rate_bucket):
+        """Verify zero rate bucket rejects over-capacity consumption."""
+        assert zero_rate_bucket.consume(10) is False
+        assert zero_rate_bucket.tokens == 5
+
+
+class TestHighRate:
+    """Test edge cases with high rate."""
+
+    def test_high_rate_refills_quickly(self):
+        """Verify high rate refills tokens quickly."""
+        bucket = TokenBucket(rate=1000.0, capacity=10)
+        assert bucket.tokens == 10
+        time.sleep(0.01)  # 10 tokens at rate=1000
+        assert bucket.tokens >= 10.0
+
+    def test_high_rate_capacity_limited(self):
+        """Verify high rate bucket is still capacity-limited."""
+        bucket = TokenBucket(rate=1000.0, capacity=10)
+        assert bucket.tokens == 10
+        time.sleep(0.02)
+        assert bucket.tokens == 10
+
+
+class TestConcurrentAccess:
+    """Test thread safety and concurrent access."""
+
+    def test_concurrent_consume_no_overconsumption(self, bucket):
+        """Verify concurrent consumers don't exceed capacity."""
+        num_threads = 20
+        results = []
+        lock = threading.Lock()
+
+        def consume_one():
+            result = bucket.consume(1)
+            with lock:
+                results.append(result)
+
+        threads = [threading.Thread(target=consume_one) for _ in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # At most 5 should succeed (capacity=5)
+        successful = sum(1 for r in results if r)
+        assert successful <= bucket.capacity
+
+    def test_concurrent_consume_all_succeed_within_capacity(self, bucket):
+        """Verify exactly capacity number of concurrent consumes succeed."""
+        num_threads = 10
+        results = []
+        lock = threading.Lock()
+
+        def consume_one():
+            result = bucket.consume(1)
+            with lock:
+                results.append(result)
+
+        threads = [threading.Thread(target=consume_one) for _ in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        successful = sum(1 for r in results if r)
+        assert successful == bucket.capacity
+
+    def test_concurrent_refill_and_consume(self, slow_bucket):
+        """Verify concurrent refill and consume operations are safe."""
+        num_consumers = 10
+        results = []
+        lock = threading.Lock()
+
+        def consume_one():
+            result = bucket.consume(1)
+            with lock:
+                results.append(result)
+
+        def refill():
+            time.sleep(0.5)  # 5 tokens at rate=0.1
+            bucket.consume(1)
+
+        threads = [threading.Thread(target=consume_one) for _ in range(num_consumers)]
+        threads.append(threading.Thread(target=refill))
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # All consumers should succeed since refill replenishes tokens
+        successful = sum(1 for r in results if r)
+        assert successful == num_consumers
+
+    def test_concurrent_no_deadlock(self, bucket):
+        """Verify no deadlock occurs under concurrent access."""
+        num_threads = 100
+        results = []
+        lock = threading.Lock()
+
+        def consume_one():
+            result = bucket.consume(1)
+            with lock:
+                results.append(result)
+
+        threads = [threading.Thread(target=consume_one) for _ in range(num_threads)]
+        start = time.monotonic()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 5.0  # Should complete quickly, no deadlock
+        assert len(results) == num_threads
+
+
+class TestMultipleConsumers:
+    """Test multiple simultaneous consumption patterns."""
+
+    def test_multiple_consumers_distribute_tokens(self, bucket):
+        """Verify multiple consumers distribute tokens correctly."""
+        num_threads = 10
+        results = []
+        lock = threading.Lock()
+
+        def consume_one():
+            result = bucket.consume(1)
+            with lock:
+                results.append(result)
+
+        threads = [threading.Thread(target=consume_one) for _ in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        successful = sum(1 for r in results if r)
+        assert successful <= bucket.capacity
+
+    def test_multiple_consumers_exact_allocation(self, bucket):
+        """Verify exact token allocation among multiple consumers."""
+        num_threads = 5
+        results = []
+        lock = threading.Lock()
+
+        def consume_one():
+            result = bucket.consume(1)
+            with lock:
+                results.append(result)
+
+        threads = [threading.Thread(target=consume_one) for _ in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        successful = sum(1 for r in results if r)
+        assert successful == num_threads
+
+
+class TestResetAndReuse:
+    """Test token bucket reset and reuse patterns."""
+
+    def test_reset_after_consumption(self, bucket):
+        """Verify tokens reset after bucket is exhausted."""
+        assert bucket.consume(5) is True
+        assert bucket.tokens == 0
+        time.sleep(0.5)  # 5 tokens at rate=10
+        assert bucket.consume(3) is True
+        assert bucket.tokens >= 1.0
+
+    def test_full_capacity_consumption(self, bucket):
+        """Verify consuming full capacity empties the bucket."""
+        assert bucket.consume(5) is True
+        assert bucket.tokens == 0
+        assert bucket.consume(1) is False
+        assert bucket.tokens == 0
+
+    def test_partial_consumption_and_refill(self, bucket):
+        """Verify partial consumption followed by refill."""
+        assert bucket.consume(3) is True
+        assert bucket.tokens == 2
+        time.sleep(0.5)  # 5 tokens at rate=10
+        assert bucket.consume(4) is True
+        assert bucket.tokens >= 1.0
+```

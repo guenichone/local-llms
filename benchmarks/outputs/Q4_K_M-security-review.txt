@@ -1,0 +1,199 @@
+# Security Vulnerability Analysis
+
+## Vulnerability 1: Reflected Cross-Site Scripting (XSS)
+
+- **CWE:** CWE-79
+- **Severity:** High
+- **Line:** 12-13
+- **Exploit:** An attacker sends a request to `/?name=<script>alert('pwned')</script>` which gets reflected back in the HTML response, executing arbitrary JavaScript in the victim's browser.
+- **Fix:** Sanitize and encode user input before embedding it in HTML.
+
+## Vulnerability 2: OS Command Injection
+
+- **CWE:** CWE-78
+- **Severity:** Critical
+- **Line:** 18
+- **Exploit:** An attacker sends `?cmd=ls;cat+/etc/passwd` or `?cmd=rm+-rf+/` to execute arbitrary system commands on the server.
+- **Fix:** Never use `shell=True`. Parse arguments explicitly and validate against an allowlist.
+
+## Vulnerability 3: Deserialization of Untrusted Data (DUTD)
+
+- **CWE:** CWE-502
+- **Severity:** Critical
+- **Line:** 23
+- **Exploit:** An attacker crafts a malicious pickle payload (e.g., `pickle.loads(base64.b64decode('...'))`) that executes arbitrary code when deserialized, achieving RCE.
+- **Fix:** Reject `pickle.loads()` entirely; switch to safe serialization formats like JSON.
+
+## Vulnerability 4: Debug Mode Enabled in Production
+
+- **CWE:** CWE-489
+- **Severity:** High
+- **Line:** 34
+- **Exploit:** `debug=True` enables the interactive debugger, which leaks full stack traces, source code, and environment variables to anyone who can trigger an error.
+- **Fix:** Set `debug=False` in production. Use `app.run()` only for development.
+
+## Vulnerability 5: Insecure Cookie Configuration
+
+- **CWE:** CWE-1004
+- **Severity:** Medium
+- **Line:** 29
+- **Exploit:** Cookie `'admin'` is set without `HttpOnly`, `Secure`, or `SameSite` flags, making it vulnerable to XSS theft and CSRF attacks.
+- **Fix:** Set `HttpOnly=True`, `Secure=True`, `SameSite='Lax'`, and a `Max-Age`.
+
+## Vulnerability 6: No Authentication or Authorization
+
+- **CWE:** CWE-306
+- **Severity:** High
+- **Line:** 17-31 (all routes)
+- **Exploit:** The `/admin/run` route has no authentication; any user can execute arbitrary system commands.
+- **Fix:** Implement session-based authentication and role-based access control.
+
+## Vulnerability 7: No CSRF Protection
+
+- **CWE:** CWE-352
+- **Severity:** Medium
+- **Line:** All routes
+- **Exploit:** An attacker can craft a malicious page that triggers state-changing requests (e.g., `/admin/run?cmd=...`) without the user's consent.
+- **Fix:** Implement CSRF tokens and validate them on state-changing requests.
+
+## Vulnerability 8: Insecure Base URL / No HTTPS
+
+- **CWE:** CWE-319
+- **Severity:** Medium
+- **Line:** 34
+- **Exploit:** Traffic is transmitted in plaintext, allowing network sniffers to intercept credentials, cookies, and sensitive data.
+- **Fix:** Use HTTPS (`wss://` for WebSocket, `https://` for HTTP) and enforce secure cookies.
+
+## Vulnerability 9: No Input Validation
+
+- **CWE:** CWE-20
+- **Severity:** Medium
+- **Line:** 10-13, 16-18, 20-22
+- **Exploit:** No validation is performed on any user input, allowing injection attacks, oversized payloads, and other abuse.
+- **Fix:** Implement server-side input validation with allowlists and length limits.
+
+## Vulnerability 10: No Rate Limiting
+
+- **CWE:** CWE-770
+- **Severity:** Medium
+- **Line:** All routes
+- **Exploit:** An attacker can brute-force cookies, perform denial-of-service, or exhaust server resources.
+- **Fix:** Implement rate limiting per endpoint and per IP/user.
+
+---
+
+# Fixed Application
+
+```python
+from flask import Flask, request, render_template_string, make_response, session
+import subprocess
+import json
+import re
+import os
+import secrets
+
+app = Flask(__name__)
+
+# Fix 4: Disable debug mode in production
+app.config['DEBUG'] = False
+
+# Fix 5: Secure cookie configuration
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_MAXAGE'] = 3600  # 1 hour
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
+
+# Fix 7: CSRF protection token
+def generate_csrf_token():
+    return secrets.token_hex(32)
+
+def validate_csrf_token(token):
+    if not token or len(token) != 64:
+        return False
+    return True
+
+# Fix 9: Input validation
+def validate_command(cmd):
+    """Only allow safe commands."""
+    allowed_cmds = ['ls', 'echo', 'pwd', 'whoami', 'date', 'uptime']
+    if not cmd or not isinstance(cmd, str):
+        return False
+    cmd = cmd.strip()
+    if not re.match(r'^[a-zA-Z0-9_\-./]+$', cmd):
+        return False
+    if cmd.split()[0] not in allowed_cmds:
+        return False
+    return True
+
+# Fix 6: Authentication decorator
+def require_auth(f):
+    def wrapper(*args, **kwargs):
+        if 'auth_token' not in session:
+            return make_response('Unauthorized', 401)
+        return f(*args, **kwargs)
+    return wrapper
+
+@app.route('/')
+def index():
+    # Fix 1: Sanitize XSS
+    name = request.args.get('name', 'world')
+    name = re.sub(r'<[^>]*>', '', name)  # Strip HTML tags
+    name = re.sub(r'[\s\S]{0,255}', lambda m: m.group()[:255], name)  # Limit length
+    safe_name = name.replace('<', '&lt;').replace('>', '&gt;')
+    return render_template_string(f"<h1>Hello, {safe_name}!</h1>")
+
+@app.route('/admin/run')
+@require_auth  # Fix 6: Require authentication
+def run_cmd():
+    # Fix 2: Prevent command injection
+    cmd = request.args.get('cmd')
+    if not validate_command(cmd):
+        return make_response('Invalid command', 400)
+    # Fix 2: Never use shell=True
+    result = subprocess.check_output(cmd.split(), shell=False)
+    return result.decode('utf-8', errors='replace')
+
+@app.route('/api/data')
+def get_data():
+    # Fix 3: Replace pickle with JSON
+    data_b64 = request.cookies.get('session_data')
+    if data_b64:
+        try:
+            decoded = base64.b64decode(data_b64)
+            data = json.loads(decoded)  # Safe deserialization
+            return data
+        except (json.JSONDecodeError, ValueError):
+            return {'error': 'invalid data format'}, 400
+    return {'error': 'no data'}
+
+@app.route('/flag')
+def flag():
+    # Fix 5: Secure cookie
+    resp = make_response("FLAG{debug}")
+    resp.set_cookie('admin', 'false',
+                    HttpOnly=True,
+                    Secure=True,
+                    SameSite='Lax',
+                    MaxAge=3600)
+    return resp
+
+if __name__ == '__main__':
+    # Fix 4: Never run with debug=True in production
+    app.run(host='0.0.0.0', port=5000, debug=False)
+```
+
+## Summary Table
+
+| # | Vulnerability | CWE | Severity | Fix |
+|---|--------------|-----|----------|-----|
+| 1 | Reflected XSS | CWE-79 | High | HTML-encode user input |
+| 2 | Command Injection | CWE-78 | Critical | Use `shell=False` + validate input |
+| 3 | DUTD / Pickle | CWE-502 | Critical | Switch to JSON |
+| 4 | Debug in Production | CWE-489 | High | Set `debug=False` |
+| 5 | Insecure Cookies | CWE-1004 | Medium | Add `HttpOnly`, `Secure`, `SameSite` |
+| 6 | No Auth | CWE-306 | High | Implement authentication |
+| 7 | No CSRF | CWE-352 | Medium | Add CSRF tokens |
+| 8 | Insecure Transport | CWE-319 | Medium | Use HTTPS |
+| 9 | No Input Validation | CWE-20 | Medium | Add validation |
+| 10 | No Rate Limiting | CWE-770 | Medium | Add rate limiting |

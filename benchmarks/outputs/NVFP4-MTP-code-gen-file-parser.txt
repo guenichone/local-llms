@@ -1,0 +1,120 @@
+```python
+import re
+from collections import defaultdict
+from typing import Generator, Dict, List, Set, Tuple, Any
+
+# Regex for Nginx combined log format:
+# $remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"
+LOG_PATTERN = re.compile(
+    r'^(\S+) \S+ \S+ \[([^\]]+)\] "([^"]*)" (\d+) (\S+) "([^"]*)" "([^"]*)"$'
+)
+
+# Regex to extract hour from timestamp (e.g., 10/Oct/2023:13:55:36 +0000)
+HOUR_PATTERN = re.compile(r':(\d{2}):')
+
+
+def parse_nginx_log(filepath: str) -> dict:
+    """Parse an Nginx combined log file and return aggregated statistics.
+
+    Uses a generator to stream parsed log entries line-by-line for memory
+    efficiency on large files.
+
+    Args:
+        filepath: Path to the Nginx access log file in combined log format.
+
+    Returns:
+        dict with the following keys:
+            - total_requests (int): Total number of successfully parsed requests.
+            - unique_ips (List[str]): Alphabetically sorted list of unique client IP addresses.
+            - status_code_counts (Dict[int, int]): Mapping of HTTP status codes to their request counts.
+            - top_10_paths (List[Tuple[str, int]]): Top 10 most-requested paths with their counts,
+              sorted descending by count.
+            - hourly_request_counts (Dict[int, int]): Mapping of hour (0-23) to request count.
+    """
+
+    def parse_line(line: str) -> dict | None:
+        """Parse a single log line into a structured dict, or None if invalid."""
+        match = LOG_PATTERN.match(line.strip())
+        if not match:
+            return None
+
+        ip, timestamp, request, status, size, referer, user_agent = match.groups()
+
+        # Extract method and path from the request line (e.g., "GET /index.html HTTP/1.1")
+        request_parts = request.split(' ', 2)
+        if len(request_parts) < 2:
+            return None
+        method = request_parts[0]
+        path = request_parts[1]
+
+        # Extract hour from timestamp (format: DD/Mon/YYYY:HH:MM:SS +ZZZZ)
+        hour_match = HOUR_PATTERN.search(timestamp)
+        hour = int(hour_match.group(1)) if hour_match else None
+
+        return {
+            'ip': ip,
+            'timestamp': timestamp,
+            'method': method,
+            'path': path,
+            'status': int(status),
+            'hour': hour,
+        }
+
+    def generate_entries(filepath: str) -> Generator[dict, None, None]:
+        """Yield parsed log entries one at a time for memory-efficient streaming."""
+        with open(filepath, 'r') as f:
+            for line in f:
+                entry = parse_line(line)
+                if entry is not None:
+                    yield entry
+
+    # Accumulators for single-pass aggregation
+    total_requests = 0
+    unique_ips: Set[str] = set()
+    status_code_counts: Dict[int, int] = defaultdict(int)
+    hourly_request_counts: Dict[int, int] = defaultdict(int)
+    path_counts: Dict[str, int] = defaultdict(int)
+
+    # Stream through the file using the generator
+    for entry in generate_entries(filepath):
+        total_requests += 1
+        unique_ips.add(entry['ip'])
+        status_code_counts[entry['status']] += 1
+        path_counts[entry['path']] += 1
+        if entry['hour'] is not None:
+            hourly_request_counts[entry['hour']] += 1
+
+    # Derive top_10_paths from path_counts
+    top_10_paths = sorted(path_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    return {
+        'total_requests': total_requests,
+        'unique_ips': sorted(unique_ips),
+        'status_code_counts': dict(status_code_counts),
+        'top_10_paths': top_10_paths,
+        'hourly_request_counts': dict(hourly_request_counts),
+    }
+```
+
+### Usage Example
+
+```python
+if __name__ == '__main__':
+    # Sample Nginx combined log entries (write to 'access.log')
+    sample_log = """192.168.1.1 - - [10/Oct/2023:13:55:36 +0000] "GET /index.html HTTP/1.1" 200 2326 "-" "Mozilla/5.0"
+192.168.1.2 - - [10/Oct/2023:14:02:11 +0000] "POST /api/login HTTP/1.1" 200 1234 "-" "curl/7.68.0"
+10.0.0.5 - - [10/Oct/2023:14:15:44 +0000] "GET /about HTTP/1.1" 200 5678 "-" "Mozilla/5.0"
+192.168.1.1 - - [10/Oct/2023:15:30:22 +0000] "GET /index.html HTTP/1.1" 304 0 "-" "Mozilla/5.0"
+10.0.0.5 - - [10/Oct/2023:16:45:09 +0000] "DELETE /api/session HTTP/1.1" 403 0 "-" "Python/3.9"
+192.168.1.3 - - [10/Oct/2023:17:00:01 +0000] "GET /contact HTTP/1.1" 200 910 "-" "Safari/16.0"
+192.168.1.1 - - [10/Oct/2023:18:22:33 +0000] "PUT /api/profile HTTP/1.1" 500 0 "-" "Mozilla/5.0"
+10.0.0.5 - - [10/Oct/2023:19:11:55 +0000] "GET /index.html HTTP/1.1" 200 2326 "-" "Mozilla/5.0"
+192.168.1.2 - - [10/Oct/2023:20:30:44 +0000] "POST /api/login HTTP/1.1" 401 0 "-" "curl/7.68.0"
+192.168.1.4 - - [10/Oct/2023:21:05:12 +0000] "GET /dashboard HTTP/1.1" 404 0 "-" "Chrome/117.0"
+"""
+
+    # Write sample to a temporary file for demonstration
+    with open('sample_access.log', 'w') as f:
+        f.write(sample_log)
+
+    stats

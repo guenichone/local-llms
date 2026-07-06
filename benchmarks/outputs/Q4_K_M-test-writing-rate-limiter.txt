@@ -1,0 +1,415 @@
+```python
+import pytest
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from token_bucket import TokenBucket
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def bucket():
+    """Default TokenBucket: rate=1 token/sec, capacity=10."""
+    return TokenBucket(rate=1.0, capacity=10)
+
+
+@pytest.fixture
+def fast_bucket():
+    """High-rate bucket: rate=100 tokens/sec, capacity=5."""
+    return TokenBucket(rate=100.0, capacity=5)
+
+
+# ---------------------------------------------------------------------------
+# Basic consumption
+# ---------------------------------------------------------------------------
+
+class TestBasicConsumption:
+
+    def test_initial_tokens(self, bucket):
+        assert bucket.consume() is True
+        assert bucket.consume() is True
+        assert bucket.tokens == 8
+
+    def test_consume_exact_tokens(self, bucket):
+        assert bucket.consume(10) is True
+        assert bucket.tokens == 0
+
+    def test_consume_all_tokens(self, bucket):
+        assert bucket.consume(10) is True
+        assert bucket.tokens == 0
+
+    def test_consume_more_than_available(self, bucket):
+        assert bucket.consume(11) is False
+        assert bucket.tokens == 0
+
+    def test_consume_zero_tokens(self, bucket):
+        assert bucket.consume(0) is True
+        # Zero tokens should always succeed and not deplete the bucket
+        assert bucket.tokens == 10
+
+    def test_consume_returns_false_when_empty(self, bucket):
+        bucket.consume(10)
+        assert bucket.consume() is False
+        assert bucket.tokens == 0
+
+    def test_consume_returns_true_when_sufficient(self, bucket):
+        bucket.consume(5)
+        assert bucket.consume(3) is True
+        assert bucket.tokens == 5
+
+
+# ---------------------------------------------------------------------------
+# Refill timing
+# ---------------------------------------------------------------------------
+
+class TestRefillTiming:
+
+    def test_refill_after_time_passes(self, bucket):
+        bucket.consume(10)
+        assert bucket.tokens == 0
+        time.sleep(1.2)
+        assert bucket.tokens >= 1.0, f"Expected >= 1.0, got {bucket.tokens}"
+
+    def test_refill_rate(self, bucket):
+        bucket.consume(10)
+        time.sleep(0.5)
+        # rate=1.0, elapsed ~0.5s -> tokens ~0.5
+        assert 0.4 <= bucket.tokens <= 0.6, f"Expected ~0.5, got {bucket.tokens}"
+
+    def test_refill_does_not_exceed_capacity(self, bucket):
+        bucket.consume(10)
+        time.sleep(5)  # rate=1.0, elapsed ~5s -> would be 5.0 but capped at 10
+        assert bucket.tokens <= 10.0
+
+    def test_refill_partial(self, bucket):
+        bucket.consume(8)
+        time.sleep(0.3)
+        # Should have refilled ~0.3 tokens
+        assert bucket.tokens >= 0.2 and bucket.tokens <= 0.5
+
+    def test_refill_immediate(self, bucket):
+        # No time passes between consuming and checking
+        bucket.consume(10)
+        assert bucket.tokens == 0
+        assert bucket.tokens + 0.0 >= 0  # should still be 0
+
+
+# ---------------------------------------------------------------------------
+# Capacity limits
+# ---------------------------------------------------------------------------
+
+class TestCapacityLimits:
+
+    def test_capacity_not_exceeded(self, bucket):
+        bucket.consume(10)
+        assert bucket.tokens == 0
+        time.sleep(1.5)
+        # Even with 1.5s elapsed, tokens should not exceed capacity (10)
+        assert bucket.tokens <= 10.0
+
+    def test_capacity_with_high_rate(self, fast_bucket):
+        fast_bucket.consume(5)
+        time.sleep(0.1)
+        # rate=100.0, elapsed ~0.1s -> would be 10.0, but capped at 5
+        assert fast_bucket.tokens <= 5.0
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+class TestEdgeCases:
+
+    def test_zero_rate(self):
+        bucket = TokenBucket(rate=0.0, capacity=10)
+        bucket.consume(10)
+        assert bucket.tokens == 0
+        time.sleep(0.5)
+        # Zero rate means no refill
+        assert bucket.tokens == 0.0
+
+    def test_zero_capacity(self):
+        bucket = TokenBucket(rate=1.0, capacity=0)
+        assert bucket.consume() is False
+        assert bucket.tokens == 0
+
+    def test_large_rate(self):
+        bucket = TokenBucket(rate=1e9, capacity=100)
+        bucket.consume(100)
+        time.sleep(0.0001)
+        # Even with huge rate, tokens should not exceed capacity
+        assert bucket.tokens <= 100.0
+
+    def test_consume_fractional_tokens(self, bucket):
+        bucket.consume(10)
+        assert bucket.consume(2.5) is True
+        assert bucket.tokens == 7.5
+
+    def test_consume_multiple_at_once(self, bucket):
+        bucket.consume(10)
+        assert bucket.consume(3) is True
+        assert bucket.consume(3) is True
+        assert bucket.tokens == 4
+
+
+# ---------------------------------------------------------------------------
+# Concurrent access
+# ---------------------------------------------------------------------------
+
+class TestConcurrency:
+
+    def test_concurrent_consumption_exact_tokens(self):
+        """10 threads, 10 tokens -> all should succeed."""
+        bucket = TokenBucket(rate=1000.0, capacity=10)
+        bucket.consume(10)
+        assert bucket.tokens == 0
+
+        results = []
+        lock = threading.Lock()
+
+        def consumer():
+            ok = bucket.consume(1)
+            with lock:
+                results.append(ok)
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(consumer) for _ in range(10)]
+            for future in as_completed(futures):
+                future.result()  # raise any exceptions
+
+        assert len(results) == 10
+        assert all(results), "All 10 threads should have succeeded"
+        assert bucket.tokens == 0
+
+    def test_concurrent_consumption_exceeds_tokens(self):
+        """11 threads, 10 tokens -> only 10 should succeed."""
+        bucket = TokenBucket(rate=1000.0, capacity=10)
+        bucket.consume(10)
+        assert bucket.tokens == 0
+
+        results = []
+        lock = threading.Lock()
+
+        def consumer():
+            ok = bucket.consume(1)
+            with lock:
+                results.append(ok)
+
+        with ThreadPoolExecutor(max_workers=11) as executor:
+            futures = [executor.submit(consumer) for _ in range(11)]
+            for future in as_completed(futures):
+                future.result()
+
+        assert len(results) == 11
+        assert sum(results) == 10, f"Expected 10 successes, got {sum(results)}"
+        assert bucket.tokens == 0
+
+    def test_concurrent_refill_during_consumption(self):
+        """Concurrent threads while tokens are being refilled."""
+        bucket = TokenBucket(rate=100.0, capacity=10)
+        bucket.consume(5)
+
+        results = []
+        lock = threading.Lock()
+
+        def consumer():
+            ok = bucket.consume(1)
+            with lock:
+                results.append(ok)
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(consumer) for _ in range(5)]
+            for future in as_completed(futures):
+                future.result()
+
+        assert sum(results) == 5, f"Expected 5 successes, got {sum(results)}"
+        # After refill, tokens should be <= capacity
+        assert bucket.tokens <= 10.0
+
+    def test_concurrent_high_frequency(self):
+        """Stress test with many threads and rapid consumption."""
+        bucket = TokenBucket(rate=10000.0, capacity=100)
+        bucket.consume(100)
+
+        num_threads = 100
+        num_tokens = 100
+        results = []
+        lock = threading.Lock()
+
+        def consumer():
+            ok = bucket.consume(1)
+            with lock:
+                results.append(ok)
+
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            futures = [executor.submit(consumer) for _ in range(num_threads)]
+            for future in as_completed(futures):
+                future.result()
+
+        assert sum(results) == num_tokens, f"Expected {num_tokens} successes, got {sum(results)}"
+        assert bucket.tokens == 0
+
+    def test_concurrent_with_refill(self):
+        """Test concurrent access while tokens are actively refilling."""
+        bucket = TokenBucket(rate=100.0, capacity=5)
+        bucket.consume(5)
+
+        results = []
+        lock = threading.Lock()
+
+        def consumer():
+            ok = bucket.consume(1)
+            with lock:
+                results.append(ok)
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(consumer) for _ in range(5)]
+            for future in as_completed(futures):
+                future.result()
+
+        assert sum(results) == 5
+
+    def test_concurrent_zero_tokens(self):
+        """Multiple threads try to consume zero tokens."""
+        bucket = TokenBucket(rate=1.0, capacity=10)
+        assert bucket.consume(0) is True
+
+        results = []
+        lock = threading.Lock()
+
+        def consumer():
+            ok = bucket.consume(0)
+            with lock:
+                results.append(ok)
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(consumer) for _ in range(10)]
+            for future in as_completed(futures):
+                future.result()
+
+        assert all(results), "All zero-token consumes should succeed"
+        assert bucket.tokens == 10
+
+    def test_concurrent_large_batch(self):
+        """Stress test with larger batch to catch subtle race conditions."""
+        bucket = TokenBucket(rate=10000.0, capacity=1000)
+        bucket.consume(1000)
+
+        num_threads = 200
+        num_tokens = 1000
+        results = []
+        lock = threading.Lock()
+
+        def consumer():
+            ok = bucket.consume(1)
+            with lock:
+                results.append(ok)
+
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            futures = [executor.submit(consumer) for _ in range(num_threads)]
+            for future in as_completed(futures):
+                future.result()
+
+        assert sum(results) == num_tokens, f"Expected {num_tokens} successes, got {sum(results)}"
+        assert bucket.tokens == 0
+
+
+# ---------------------------------------------------------------------------
+# Token refill accuracy
+# ---------------------------------------------------------------------------
+
+class TestRefillAccuracy:
+
+    def test_refill_exact_amount(self, bucket):
+        bucket.consume(10)
+        time.sleep(1.0)
+        assert bucket.tokens >= 1.0, f"Expected >= 1.0, got {bucket.tokens}"
+
+    def test_refill_partial_amount(self, bucket):
+        bucket.consume(10)
+        time.sleep(0.5)
+        assert 0.4 <= bucket.tokens <= 0.6, f"Expected ~0.5, got {bucket.tokens}"
+
+    def test_refill_multiple_intervals(self, bucket):
+        bucket.consume(10)
+        time.sleep(0.5)
+        time.sleep(0.5)
+        # After 1s, should have ~1.0 tokens
+        assert 0.8 <= bucket.tokens <= 1.2, f"Expected ~1.0, got {bucket.tokens}"
+
+
+# ---------------------------------------------------------------------------
+# Thread safety - lock verification
+# ---------------------------------------------------------------------------
+
+class TestThreadSafety:
+
+    def test_lock_is_acquired(self):
+        """Verify the lock is properly acquired and released."""
+        bucket = TokenBucket(rate=1.0, capacity=10)
+        bucket.consume(10)
+
+        results = []
+        lock = threading.Lock()
+
+        def consumer():
+            ok = bucket.consume(1)
+            with lock:
+                results.append(ok)
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(consumer) for _ in range(10)]
+            for future in as_completed(futures):
+                future.result()
+
+        assert sum(results) == 10, f"Expected 10 successes, got {sum(results)}"
+        assert bucket.tokens == 0
+
+    def test_no_deadlock_on_concurrent_access(self):
+        """Multiple threads accessing the bucket should not deadlock."""
+        bucket = TokenBucket(rate=1000.0, capacity=100)
+        bucket.consume(100)
+
+        results = []
+        lock = threading.Lock()
+
+        def consumer():
+            ok = bucket.consume(1)
+            with lock:
+                results.append(ok)
+
+        with ThreadPoolExecutor(max_workers=50) as executor:
+            futures = [executor.submit(consumer) for _ in range(50)]
+            for future in as_completed(futures):
+                future.result()
+
+        assert sum(results) == 100, f"Expected 100 successes, got {sum(results)}"
+        assert bucket.tokens == 0
+
+
+# ---------------------------------------------------------------------------
+# Token bucket initialization
+# ---------------------------------------------------------------------------
+
+class TestInitialization:
+
+    def test_default_state(self, bucket):
+        assert bucket.tokens == 10
+        assert bucket.capacity == 10
+        assert bucket.rate == 1.0
+
+    def test_custom_rate_capacity(self):
+        bucket = TokenBucket(rate=5.0, capacity=20)
+        assert bucket.tokens == 20
+        assert bucket.capacity == 20
+        assert bucket.rate == 5.0
+
+    def test_initial_last_refill(self, bucket):
+        # last_refill should be set to current time
+        now = time.monotonic()
+        assert bucket.last_refill >= now - 0.001
+```

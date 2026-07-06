@@ -1,0 +1,159 @@
+# Thread-Safety Bugs in `TTLCache`
+
+Here are the identified bugs, ordered by severity:
+
+---
+
+## Bug 1: `get()` — `KeyError` and Lost Updates (Severity: **HIGH**)
+
+**Problem:** Between the `if key in self._store` check and `del self._store[key]`, another thread may delete the key, raising a `KeyError`. Additionally, concurrent `set()` calls can cause lost updates — a `get()` may return a stale value or miss a newer one entirely.
+
+**Example race:**
+```
+Thread A: set(key, "v1")
+Thread B: get(key) → None (key not yet visible)
+Thread A: get(key) → "v1"
+Thread B: set(key, "v2")
+Thread A: get(key) → "v2"  # Lost update — "v1" was overwritten silently
+```
+
+**Fix:** Protect all `_store` operations with a lock and use atomic check-and-delete:
+
+```python
+import threading
+
+class TTLCache:
+    def __init__(self, ttl_seconds=60):
+        self._store = {}
+        self._ttl = ttl_seconds
+        self._lock = threading.Lock()
+    
+    def get(self, key):
+        with self._lock:
+            if key in self._store:
+                value, expiry = self._store[key]
+                if time.time() < expiry:
+                    return value
+                del self._store[key]
+            return None
+    
+    def set(self, key, value):
+        with self._lock:
+            self._store[key] = (value, time.time() + self._ttl)
+```
+
+---
+
+## Bug 2: `cleanup()` — `RuntimeError` During Iteration (Severity: **HIGH**)
+
+**Problem:** Iterating over `self._store` while another thread may `set()` or `get()` (which deletes keys) can raise a `RuntimeError: dictionary changed size during iteration`.
+
+**Fix:** Hold the lock during iteration:
+
+```python
+    def cleanup(self):
+        with self._lock:
+            now = time.time()
+            expired_keys = [
+                key for key, (_, expiry) in self._store.items()
+                if now >= expiry
+            ]
+            for key in expired_keys:
+                del self._store[key]
+```
+
+---
+
+## Bug 3: `size()` — Inconsistent Snapshot (Severity: **MEDIUM**)
+
+**Problem:** Between `len(self._store)` and returning the value, another thread may modify the dict, so the caller gets a stale or inconsistent count.
+
+**Fix:** Read the size under the lock:
+
+```python
+    def size(self):
+        with self._lock:
+            return len(self._store)
+```
+
+---
+
+## Bug 4: `set()` — Lost Updates Without Atomic CAS (Severity: **MEDIUM**)
+
+**Problem:** A `get()` may return a value that was just overwritten by another `set()`. The `get()` cannot distinguish "expired" from "overwritten by another thread".
+
+**Fix:** Use a CAS-style atomic check-and-delete in `get()`:
+
+```python
+    def get(self, key):
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is not None:
+                value, expiry = entry
+                if time.time() < expiry:
+                    return value
+                del self._store[key]  # Atomic remove
+            return None
+```
+
+---
+
+## Bug 5: No Synchronization Mechanism at All (Severity: **HIGH**)
+
+**Problem:** The class has no lock, RLock, or other synchronization primitive. In CPython, the GIL provides partial safety, but it does not guarantee atomicity for compound operations across all operations — and the code is not portable to other Python implementations or C extensions.
+
+**Fix:** Add a `threading.Lock()` in `__init__` and use it consistently in all methods.
+
+---
+
+## Summary Table
+
+| Bug | Method | Severity | Root Cause | Fix |
+|-----|--------|----------|------------|-----|
+| KeyError on stale check | `get()` | HIGH | Check-then-delete race | Lock + atomic delete |
+| Lost updates | `get()`/`set()` | HIGH | Non-atomic read-modify-write | Lock + CAS pattern |
+| RuntimeError on iteration | `cleanup()` | HIGH | Dict mutation during iteration | Lock + collect-then-delete |
+| Inconsistent snapshot | `size()` | MEDIUM | Read between mutations | Lock around `len()` |
+| No synchronization | All | HIGH | No lock/RLock/RLock | Add `threading.Lock()` |
+
+---
+
+## Final Thread-Safe Implementation
+
+```python
+import time
+import threading
+
+class TTLCache:
+    def __init__(self, ttl_seconds=60):
+        self._store = {}
+        self._ttl = ttl_seconds
+        self._lock = threading.Lock()
+    
+    def get(self, key):
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is not None:
+                value, expiry = entry
+                if time.time() < expiry:
+                    return value
+                del self._store[key]
+            return None
+    
+    def set(self, key, value):
+        with self._lock:
+            self._store[key] = (value, time.time() + self._ttl)
+    
+    def cleanup(self):
+        with self._lock:
+            now = time.time()
+            expired = [
+                k for k, (_, e) in self._store.items() if now >= e
+            ]
+            for k in expired:
+                del self._store[k]
+    
+    def size(self):
+        with self._lock:
+            return len(self._store)
+```

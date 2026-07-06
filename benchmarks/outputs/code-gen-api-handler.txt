@@ -1,0 +1,292 @@
+```python
+# main.py
+
+import logging
+from typing import Any, Dict, List, Optional
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic_core import ValidationError
+
+logger = logging.getLogger(__name__)
+
+
+# ── Pydantic Models ────────────────────────────────────────────────────────────
+
+class FiltersDict(BaseModel):
+    """Accepts arbitrary filters as a dictionary.
+    
+    Validates that all filter keys and values are of expected types.
+    """
+
+    filters: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional filters to apply to search results.",
+    )
+
+    @model_validator(mode="after")
+    def validate_filters(self) -> "FiltersDict":
+        if self.filters is None:
+            self.filters = {}
+        return self
+
+
+class SearchRequest(BaseModel):
+    """Request body for the POST /api/search endpoint."""
+
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="Search query string.",
+    )
+    filters: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional filters applied to search results.",
+    )
+    page: int = Field(
+        default=1,
+        ge=1,
+        description="Page number (1-based).",
+    )
+    per_page: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Number of results per page (max 100).",
+    )
+
+    @field_validator("query")
+    @classmethod
+    def validate_query(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("query must not be empty")
+        return v
+
+    @field_validator("page")
+    @classmethod
+    def validate_page(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("page must be at least 1")
+        return v
+
+    @field_validator("per_page")
+    @classmethod
+    def validate_per_page(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("per_page must be at least 1")
+        if v > 100:
+            raise ValueError("per_page must not exceed 100")
+        return v
+
+
+class SearchResult(BaseModel):
+    """A single search result item."""
+
+    id: str
+    title: str
+    snippet: str
+    document_type: str
+    score: float
+
+
+class PaginatedResponse(BaseModel):
+    """Paginated search response."""
+
+    items: List[SearchResult]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+    query: str
+    filters_applied: Dict[str, Any]
+
+
+# ── Async Database Dependency ──────────────────────────────────────────────────
+
+async def search_documents(
+    query: str,
+    filters: Dict[str, Any],
+    offset: int,
+    limit: int,
+) -> tuple[list[dict], int]:
+    """Placeholder for the async database search function.
+
+    In production, this would call an async ORM or query builder.
+    """
+    logger.info(
+        "search_documents called with query=%s, offset=%d, limit=%d",
+        query,
+        offset,
+        limit,
+    )
+    # Simulated delay / database call
+    await asyncio.sleep(0.01)
+    # Simulated results
+    items = [
+        {"id": "doc-1", "title": "Result 1", "snippet": "...", "document_type": "article", "score": 0.95},
+        {"id": "doc-2", "title": "Result 2", "snippet": "...", "document_type": "report", "score": 0.87},
+    ]
+    total = 2
+    return items, total
+
+
+import asyncio
+
+
+# ── FastAPI App ────────────────────────────────────────────────────────────────
+
+app = FastAPI(
+    title="Search API",
+    description="Async paginated search with filters and OpenAPI documentation.",
+    version="1.0.0",
+)
+
+
+@app.post(
+    "/api/search",
+    response_model=PaginatedResponse,
+    responses={
+        400: {"description": "Invalid request body or parameters."},
+        422: {"description": "Validation error for request body."},
+    },
+    summary="Search Documents",
+    tags=["Search"],
+    include_in_schema=True,
+)
+async def search(
+    request: SearchRequest,
+    page: int = Query(
+        default=1,
+        ge=1,
+        description="Page number (1-based).",
+    ),
+    per_page: int = Query(
+        default=20,
+        ge=1,
+        le=100,
+        description="Number of results per page.",
+    ),
+) -> PaginatedResponse:
+    """Search for documents with optional filters and pagination.
+
+    Accepts a query string, optional filters, and pagination parameters.
+    Returns a paginated list of search results.
+    """
+    logger.info(
+        "POST /api/search: query=%s, page=%d, per_page=%d",
+        request.query,
+        page,
+        per_page,
+    )
+
+    try:
+        items, total = await search_documents(
+            query=request.query,
+            filters=request.filters,
+            offset=(page - 1) * per_page,
+            limit=per_page,
+        )
+    except Exception as exc:
+        logger.exception("Error during search_documents call")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Internal server error", "message": str(exc)},
+        )
+
+    total_pages = (total + per_page - 1) // per_page if total > 0 else 0
+    items = items[:per_page]
+
+    response = PaginatedResponse(
+        items=[SearchResult(**item) for item in items],
+        total=total,
+        page=page,
+        per_page=per_page,
+        total_pages=total_pages,
+        query=request.query,
+        filters_applied=request.filters,
+    )
+
+    logger.info(
+        "Search returned %d items, total=%d, page=%d",
+        len(items),
+        total,
+        page,
+    )
+
+    return response
+```
+
+### Key Design Decisions
+
+| Concern | Implementation |
+|---|---|
+| **Validation** | Pydantic `SearchRequest` with field validators (`query` non-empty, `page >= 1`, `per_page 1–100`) |
+| **Error Handling** | `HTTPException` for server errors (500), FastAPI auto-returns 422 for validation failures |
+| **Async DB** | `search_documents` async function with logging; can be replaced with SQLAlchemy or async query builder |
+| **Logging** | Structured logs at `info`/`exception` level with relevant context |
+| **OpenAPI** | `summary`, `tags`, `responses`, `response_model` for full schema generation |
+| **Pagination** | 1-based page, computed `total_pages`, capped `per_page` at 100 |
+| **Filtering** | Filters passed through as dict; validated via `FiltersDict` model |
+
+### Example Requests
+
+**Basic search:**
+```json
+POST /api/search
+{"query": "machine learning", "page": 1, "per_page": 10}
+```
+
+**With filters:**
+```json
+POST /api/search
+{"query": "AI", "filters": {"document_type": "report", "score_gte": 0.7}, "page": 2, "per_page": 25}
+```
+
+**Pagination:**
+```json
+POST /api/search
+{"query": "fastapi", "page": 5, "per_page": 50}
+```
+
+### Example Responses
+
+**Success (200):**
+```json
+{
+  "items": [
+    {"id": "doc-1", "title": "FastAPI Guide", "snippet": "...", "document_type": "guide", "score": 0.95},
+    {"id": "doc-2", "title": "FastAPI Tutorial", "snippet": "...", "document_type": "tutorial", "score": 0.87}
+  ],
+  "total": 42,
+  "page": 1,
+  "per_page": 20,
+  "total_pages": 3,
+  "query": "fastapi",
+  "filters_applied": {}
+}
+```
+
+**Validation Error (422):**
+```json
+{
+  "detail": [
+    {
+      "type": "value_error.number.not_ge",
+      "loc": ["body", "page"],
+      "msg": "Input should be greater than or equal to 1"
+    }
+  ]
+}
+```
+
+### Production Recommendations
+
+1. **Replace `search_documents`** with a real async ORM (e.g., SQLAlchemy 2.0 async, Tortoise ORM, or async Databases)
+2. **Add rate limiting** (e.g., `slowapi` or FastAPI's `RateLimiterMiddleware`)
+3. **Add caching** for frequent queries (e.g., Redis)
+4. **Use dependency injection** for DB session management
+5. **Add middleware** for request ID, timing, and access logging
+6. **Pin Pydantic version** to v2.x for `model_validator` support

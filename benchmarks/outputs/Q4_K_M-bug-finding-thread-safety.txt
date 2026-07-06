@@ -1,0 +1,135 @@
+# Thread-Safety Bugs in `TTLCache`
+
+This class uses a plain Python `dict` for storage. In CPython, dict operations are **not atomic** with respect to concurrent access, so multiple threads calling these methods simultaneously cause race conditions. Below are the identified bugs, ranked by severity.
+
+---
+
+## Bug 1 — `get`: Check-then-act race on key existence (HIGH)
+
+**Location:** `get()`
+
+```python
+if key in self._store:        # ← check
+    value, expiry = self._store[key]  # ← act
+```
+
+**Problem:** Between the `key in self._store` check and the tuple unpacking, another thread can `del self._store[key]`, raising a `KeyError`.
+
+**Fix:** Use a try/except block, or hold a lock during the entire get sequence.
+
+---
+
+## Bug 2 — `get`: Check-then-delete race on expiry (MEDIUM)
+
+**Location:** `get()`
+
+```python
+if time.time() < expiry:
+    return value
+del self._store[key]  # ← deleted while another thread may re-insert
+```
+
+**Problem:** Between the expiry check and the `del`, another thread can `set()` the same key with a fresh expiry. The expired entry gets re-registered, defeating the TTL guarantee.
+
+**Fix:** Delete the entry only after confirming it is still expired, under a lock.
+
+---
+
+## Bug 3 — `set`: Non-atomic concurrent writes (MEDIUM)
+
+**Location:** `set()`
+
+```python
+self._store[key] = (value, time.time() + self._ttl)
+```
+
+**Problem:** Two threads calling `set()` with the same key may interleave writes. The final value depends on thread scheduling — this is a lost-update race condition.
+
+**Fix:** Protect writes with a lock.
+
+---
+
+## Bug 4 — `cleanup`: Concurrent iteration + deletion (HIGH)
+
+**Location:** `cleanup()`
+
+```python
+for key in list(self._store.keys()):
+    _, expiry = self._store[key]
+    if now >= expiry:
+        del self._store[key]
+```
+
+**Problem:** Iterating over the dict's keys while deleting entries from the same dict is unsafe. In CPython this can raise `RuntimeError` or produce inconsistent results. Additionally, between reading `expiry` and `del`, another thread could modify the dict.
+
+**Fix:** Collect expired keys into a separate list, then delete them outside the iteration.
+
+---
+
+## Bug 5 — `cleanup`: Race with `get` on same key (MEDIUM)
+
+**Location:** `cleanup()`
+
+**Problem:** If `cleanup()` runs concurrently with `get()`, a key could be deleted by `cleanup` and then re-inserted by `get`, or vice versa. This leads to inconsistent state and potential `KeyError` in `get`.
+
+**Fix:** Serialize `cleanup` and `get`/`set` calls with a lock.
+
+---
+
+## Bug 6 — `size`: Inconsistent read during modification (LOW)
+
+**Location:** `size()`
+
+```python
+return len(self._store)
+```
+
+**Problem:** Reading `len(self._store)` while another thread is modifying the dict may return a stale or inconsistent count.
+
+**Fix:** Protect the read with a lock.
+
+---
+
+# Recommended Fix
+
+Introduce a `threading.Lock` and use it consistently across all methods:
+
+```python
+import threading
+import time
+
+class TTLCache:
+    def __init__(self, ttl_seconds=60):
+        self._store = {}
+        self._ttl = ttl_seconds
+        self._lock = threading.Lock()
+
+    def get(self, key):
+        with self._lock:
+            if key in self._store:
+                value, expiry = self._store[key]
+                if time.time() < expiry:
+                    return value
+                del self._store[key]
+            return None
+
+    def set(self, key, value):
+        with self._lock:
+            self._store[key] = (value, time.time() + self._ttl)
+
+    def cleanup(self):
+        with self._lock:
+            now = time.time()
+            expired = [
+                k for k, (_, expiry) in self._store.items()
+                if now >= expiry
+            ]
+            for k in expired:
+                del self._store[k]
+
+    def size(self):
+        with self._lock:
+            return len(self._store)
+```
+
+**Note:** For better performance under high contention, consider `threading.RLock` (if reentrant access is needed) or `queue.Queue`/`asyncio.Lock` for async contexts. For production workloads, a lock-free data structure or a `dict` wrapped in `threading.local()` with per-thread caches may also be appropriate.

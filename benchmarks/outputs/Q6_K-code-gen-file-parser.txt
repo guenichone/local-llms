@@ -1,0 +1,148 @@
+```python
+"""
+Nginx combined log format parser.
+
+Provides efficient parsing of Nginx access logs with generator-based
+streaming for memory-efficient processing of large files.
+"""
+
+import re
+from collections import Counter
+from typing import Generator, Dict, List, Set, Tuple
+
+
+# Nginx combined log format pattern
+# Example: 192.168.1.1 - - [10/Oct/2023:13:55:36 +0000] "GET /index.html HTTP/1.1" 200 2326 "http://example.com" "Mozilla/5.0"
+LOG_PATTERN = re.compile(
+    r'^(?P<ip>\S+)'                                    # Remote address
+    r'\s+\S+'                                           # Remote logname
+    r'\s+\S+'                                           # Remote user
+    r'\s+\[(?P<timestamp>[^\]]+)\]'                     # Time local
+    r'\s+"(?P<request>[^"]*)"'                          # Request line
+    r'\s+(?P<status>\d{3})'                            # Status code
+    r'\s+(?P<body_bytes>\d+)'                          # Body bytes sent
+    r'\s+"(?P<referer>[^"]*)"'                         # Referer
+    r'\s+"(?P<user_agent>[^"]*)"'                      # User agent
+)
+
+# Regex to extract hour from timestamp like "10/Oct/2023:13:55:36 +0000"
+HOUR_PATTERN = re.compile(r':(\d{2}):\d{2}:\d{2}')
+
+
+class NginxLogParser:
+    """Generator-based parser for Nginx combined log format."""
+
+    def __init__(self, filepath: str):
+        self.filepath = filepath
+
+    def parse(self) -> Generator[Dict[str, str], None, None]:
+        """
+        Generator that yields parsed log entries one at a time.
+        Memory-efficient for large files.
+        """
+        with open(self.filepath, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                match = LOG_PATTERN.match(line)
+                if match:
+                    yield match.groupdict()
+                # If line doesn't match, skip silently
+
+
+def parse_nginx_log(filepath: str) -> Dict:
+    """
+    Parse an Nginx combined log file and return aggregated statistics.
+
+    Args:
+        filepath: Path to the Nginx access log file.
+
+    Returns:
+        Dictionary containing:
+            - total_requests (int): Total number of log entries.
+            - unique_ips (set): Set of unique client IP addresses.
+            - status_code_counts (dict): Status code -> request count.
+            - top_10_paths (list): Top 10 most requested paths,
+              each as (path, count) tuple sorted by count descending.
+            - hourly_request_counts (dict): Hour (0-23) -> request count.
+
+    Raises:
+        FileNotFoundError: If the log file does not exist.
+        ValueError: If the file is empty or no valid log entries are found.
+
+    Example:
+        >>> stats = parse_nginx_log('access.log')
+        >>> print(f"Total requests: {stats['total_requests']}")
+        >>> print(f"Unique IPs: {len(stats['unique_ips'])}")
+    """
+    if not filepath or not os.path.exists(filepath):
+        raise FileNotFoundError(f"Log file not found: {filepath}")
+
+    parser = NginxLogParser(filepath)
+    entries = parser.parse()
+
+    total_requests = 0
+    unique_ips: Set[str] = set()
+    status_code_counts: Counter = Counter()
+    path_counts: Counter = Counter()
+    hourly_request_counts: Counter = Counter()
+
+    for entry in entries:
+        total_requests += 1
+        unique_ips.add(entry['ip'])
+        status_code_counts[entry['status']] += 1
+        path = _extract_path(entry['request'])
+        path_counts[path] += 1
+
+        hour_match = HOUR_PATTERN.search(entry['timestamp'])
+        if hour_match:
+            hour = int(hour_match.group(1))
+            hourly_request_counts[hour] += 1
+
+    if total_requests == 0:
+        raise ValueError("No valid log entries found in the file.")
+
+    top_10_paths = [
+        (path, count)
+        for path, count in path_counts.most_common(10)
+    ]
+
+    result = {
+        'total_requests': total_requests,
+        'unique_ips': unique_ips,
+        'status_code_counts': dict(status_code_counts),
+        'top_10_paths': top_10_paths,
+        'hourly_request_counts': dict(hourly_request_counts),
+    }
+
+    return result
+
+
+def _extract_path(request_line: str) -> str:
+    """Extract the URL path from a request line like 'GET /index.html HTTP/1.1'."""
+    parts = request_line.split()
+    if len(parts) >= 2:
+        return parts[1]
+    return '/'
+
+
+if __name__ == '__main__':
+    import os
+
+    # Usage example
+    log_file = os.path.join(os.path.dirname(__file__), 'access.log')
+    if os.path.exists(log_file):
+        stats = parse_nginx_log(log_file)
+
+        print(f"Total Requests: {stats['total_requests']}")
+        print(f"Unique IPs: {len(stats['unique_ips'])}")
+        print(f"Status Code Counts: {stats['status_code_counts']}")
+        print(f"Top 10 Paths:")
+        for path, count in stats['top_10_paths']:
+            print(f"  {path}: {count}")
+        print(f"Hourly Request Counts: {stats['hourly_request_counts']}")
+    else:
+        print(f"Log file not found: {log_file}")
+        print("Create a sample access.log file to run this example.")
+```

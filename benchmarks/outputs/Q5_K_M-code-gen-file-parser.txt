@@ -1,0 +1,112 @@
+```python
+import re
+from collections import Counter, defaultdict
+from heapq import nlargest
+from pathlib import Path
+from typing import Dict, List, Set
+
+
+# Regex for Nginx combined log format:
+# IP - - [timestamp] "METHOD PATH PROTOCOL" STATUS SIZE
+COMBINED_LOG_RE = re.compile(
+    r'^(?P<ip>\S+)'
+    r'\s+\S+\s+\S+'                              # ident, authuser (ignored)
+    r'\s+\[(?P<timestamp>[^\]]+)\]'              # timestamp
+    r'\s+"(?P<method>\S+)\s+(?P<path>\S+)\s+\S+"'  # request line
+    r'\s+(?P<status>\d+)'                        # status code
+    r'\s+(?P<size>\S+)'                          # response size
+)
+
+# Nginx combined format uses Apache common log format timestamp:
+# DD/Mon/YYYY:HH:MM:SS +/-ZZZZ
+TIMESTAMP_RE = re.compile(r'(\d{2})/(\w{3})/(\d{4}):(\d{2}):(\d{2}):(\d{2})')
+
+MONTH_MAP = {
+    'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4,
+    'May': 5, 'Jun': 6, 'Jul': 7, 'Aug': 8,
+    'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12,
+}
+
+
+def parse_nginx_log(filepath: str) -> Dict:
+    """Parse an Nginx combined log file and return aggregated statistics.
+
+    Uses a streaming generator to process the file line-by-line,
+    avoiding loading the entire file into memory. Suitable for large log files.
+
+    Args:
+        filepath: Path to the Nginx combined log file.
+
+    Returns:
+        Dict with keys:
+            - total_requests (int): Total number of log entries.
+            - unique_ips (int): Number of distinct client IP addresses.
+            - status_code_counts (dict): Mapping of HTTP status codes to counts.
+            - top_10_paths (list): Top 10 most frequently accessed paths.
+            - hourly_request_counts (dict): Mapping of hour strings (e.g. "14") to request counts.
+    """
+    status_counter: Counter = Counter()
+    ip_set: Set[str] = set()
+    path_counter: Counter = Counter()
+    hour_counter: Counter = Counter()
+    total = 0
+
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as fh:
+        for line in fh:
+            match = COMBINED_LOG_RE.match(line)
+            if not match:
+                continue
+
+            total += 1
+            ip = match.group('ip')
+            status = match.group('status')
+            path = match.group('path')
+
+            ip_set.add(ip)
+            status_counter[status] += 1
+            path_counter[path] += 1
+
+            # Extract hour from timestamp
+            ts_match = TIMESTAMP_RE.match(match.group('timestamp'))
+            if ts_match:
+                hour = ts_match.group(4)
+                hour_counter[hour] += 1
+
+    top_10_paths = nlargest(10, path_counter, key=path_counter.get)
+    hourly_request_counts = dict(hour_counter)
+
+    return {
+        'total_requests': total,
+        'unique_ips': len(ip_set),
+        'status_code_counts': dict(status_counter),
+        'top_10_paths': top_10_paths,
+        'hourly_request_counts': hourly_request_counts,
+    }
+
+
+if __name__ == '__main__':
+    # Example usage
+    sample_log = """192.168.1.1 - - [10/Oct/2023:14:05:36 -0700] "GET /index.html HTTP/1.1" 200 2326
+192.168.1.2 - - [10/Oct/2023:14:06:12 -0700] "POST /api/login HTTP/1.1" 302 0
+192.168.1.1 - - [10/Oct/2023:15:10:00 -0700] "GET /index.html HTTP/1.1" 200 2326
+10.0.0.5 - - [10/Oct/2023:15:15:30 -0700] "GET /about HTTP/1.1" 404 1234
+192.168.1.3 - - [10/Oct/2023:14:20:00 -0700] "GET /api/data HTTP/1.1" 500 567
+"""
+
+    # Write sample log to temp file
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.log', delete=False) as tmp:
+        tmp.write(sample_log)
+        tmp_path = tmp.name
+
+    try:
+        stats = parse_nginx_log(tmp_path)
+        print("=== Nginx Log Statistics ===")
+        print(f"Total Requests:      {stats['total_requests']}")
+        print(f"Unique IPs:          {stats['unique_ips']}")
+        print(f"Status Code Counts:  {stats['status_code_counts']}")
+        print(f"Top 10 Paths:        {stats['top_10_paths']}")
+        print(f"Hourly Counts:       {stats['hourly_request_counts']}")
+    finally:
+        Path(tmp_path).unlink()
+```

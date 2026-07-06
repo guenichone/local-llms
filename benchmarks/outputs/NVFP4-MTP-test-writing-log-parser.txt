@@ -1,0 +1,291 @@
+```python
+import pytest
+from your_module import parse_log_line
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 1. Valid lines (with IP address)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestParseValidLogWithIP:
+    def test_basic_error_log(self):
+        """Parse a standard ERROR log line with IP address."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user123 - Failed login from 192.168.1.1"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['level'] == 'ERROR'
+        assert result['timestamp'] == '2024-01-15 10:30:00'
+        assert result['user_id'] == 'user123'
+        assert result['message'] == 'Failed login'
+        assert result['ip_address'] == '192.168.1.1'
+
+    def test_warning_log(self):
+        """Parse a WARNING log line with IP address."""
+        line = "[WARNING] 2023-06-20 14:22:33 - admin - Disk usage high from 10.0.0.5"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['level'] == 'WARNING'
+        assert result['user_id'] == 'admin'
+        assert result['ip_address'] == '10.0.0.5'
+
+    def test_info_log(self):
+        """Parse an INFO log line with IP address."""
+        line = "[INFO] 2025-12-31 23:59:59 - system - Service started from 172.16.0.1"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['level'] == 'INFO'
+        assert result['message'] == 'Service started'
+        assert result['ip_address'] == '172.16.0.1'
+
+    def test_single_digit_ip(self):
+        """Parse a log line with single-digit IP octets (e.g., 1.2.3.4)."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - Timeout from 1.2.3.4"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['ip_address'] == '1.2.3.4'
+
+    def test_message_with_colon_and_comma(self):
+        """Parse a log line with message containing colons and commas."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - Connection refused: port 80 from 192.168.1.1"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['message'] == 'Connection refused: port 80'
+
+    def test_message_with_ellipsis(self):
+        """Parse a log line with message containing ellipsis."""
+        line = "[WARNING] 2024-01-15 10:30:00 - user1 - Processing... done from 10.0.0.1"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['message'] == 'Processing... done'
+
+    def test_message_with_dashes(self):
+        """Parse a log line with message containing dashes."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - Error-code: E-1234 from 192.168.1.1"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['message'] == 'Error-code: E-1234'
+
+    def test_message_with_parentheses(self):
+        """Parse a log line with message containing parentheses."""
+        line = "[INFO] 2024-01-15 10:30:00 - user1 - Config loaded (v2.1) from 10.0.0.1"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['message'] == 'Config loaded (v2.1)'
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2. Valid lines (without IP address)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestParseValidLogWithoutIP:
+    def test_no_ip_address(self):
+        """Parse a log line with no IP address."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - Failed login"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['level'] == 'ERROR'
+        assert result['ip_address'] is None
+
+    def test_no_ip_with_trailing_period(self):
+        """Parse a log line where message ends with a period and no IP."""
+        line = "[WARNING] 2024-01-15 10:30:00 - user1 - Operation completed."
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['ip_address'] is None
+
+    def test_no_ip_with_question_mark(self):
+        """Parse a log line with question mark in message and no IP."""
+        line = "[INFO] 2024-01-15 10:30:00 - user1 - Is this correct?"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['ip_address'] is None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3. Invalid lines
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestParseInvalidLog:
+    def test_empty_string(self):
+        """Return None for empty string input."""
+        assert parse_log_line("") is None
+
+    def test_whitespace_only(self):
+        """Return None for whitespace-only input."""
+        assert parse_log_line("   ") is None
+
+    def test_no_bracket(self):
+        """Return None if line lacks [LEVEL] prefix."""
+        line = "2024-01-15 10:30:00 - user1 - Failed login"
+        assert parse_log_line(line) is None
+
+    def test_invalid_level(self):
+        """Return None for non-word level (e.g., 'error!')."""
+        line = "[error!] 2024-01-15 10:30:00 - user1 - Failed login"
+        assert parse_log_line(line) is None
+
+    def test_invalid_timestamp(self):
+        """Return None for invalid timestamp format."""
+        line = "[ERROR] 2024-13-45 25:99:99 - user1 - Failed login"
+        assert parse_log_line(line) is None
+
+    def test_invalid_user_id(self):
+        """Return None for non-word user id."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user! - Failed login"
+        assert parse_log_line(line) is None
+
+    def test_missing_separator(self):
+        """Return None if separators between fields are missing."""
+        line = "[ERROR] 2024-01-15 10:30:00 user1 - Failed login"
+        assert parse_log_line(line) is None
+
+    def test_invalid_ip(self):
+        """Return None for malformed IP address."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - Failed login from 999.999.999.999"
+        assert parse_log_line(line) is None
+
+    def test_non_greedy_matching(self):
+        """Message should not include the IP part due to non-greedy matching."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - Timeout from 192.168.1.1"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['message'] == 'Timeout'
+        assert result['ip_address'] == '192.168.1.1'
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 4. Edge cases
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestParseEdgeCases:
+    def test_return_type_is_dict(self):
+        """Return type should be dict when parsing succeeds."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - Failed login"
+        result = parse_log_line(line)
+        assert isinstance(result, dict)
+
+    def test_return_type_is_none_on_failure(self):
+        """Return type should be None when parsing fails."""
+        assert parse_log_line("invalid") is None
+
+    def test_required_keys_present(self):
+        """Dict should contain all required keys."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - Failed login"
+        result = parse_log_line(line)
+        assert result is not None
+        for key in ('level', 'timestamp', 'user_id', 'message', 'ip_address'):
+            assert key in result, f"Missing key: {key}"
+
+    def test_value_types(self):
+        """All values should have correct types."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - Failed login"
+        result = parse_log_line(line)
+        assert isinstance(result['level'], str)
+        assert isinstance(result['timestamp'], str)
+        assert isinstance(result['user_id'], str)
+        assert isinstance(result['message'], str)
+        assert result['ip_address'] is None
+
+    def test_level_is_uppercase(self):
+        """Level should be uppercase (matching the regex \w+)."""
+        line = "[error] 2024-01-15 10:30:00 - user1 - Failed login"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['level'] == 'error'
+
+    def test_timestamp_format(self):
+        """Timestamp should match expected format."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - Failed login"
+        result = parse_log_line(line)
+        assert result is not None
+        assert len(result['timestamp']) == 19  # YYYY-MM-DD HH:MM:SS
+
+    def test_message_stripped(self):
+        """Message should be stripped of surrounding whitespace."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 -   Failed login   "
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['message'] == 'Failed login'
+
+    def test_message_with_multiple_messages(self):
+        """Only the first message should be captured."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - First msg from 192.168.1.1"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['message'] == 'First msg'
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 5. Docstring example
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestParseDocstringExample:
+    def test_docstring_example(self):
+        """Test the exact example from the function docstring."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user123 - Failed login from 192.168.1.1"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['level'] == 'ERROR'
+        assert result['timestamp'] == '2024-01-15 10:30:00'
+        assert result['user_id'] == 'user123'
+        assert result['message'] == 'Failed login'
+        assert result['ip_address'] == '192.168.1.1'
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 6. Additional edge cases
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestParseAdditionalEdgeCases:
+    def test_two_digit_ip(self):
+        """Parse a log line with two-digit IP octets."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - Request from 10.20.30.40"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['ip_address'] == '10.20.30.40'
+
+    def test_three_digit_ip(self):
+        """Parse a log line with three-digit IP octets."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - Request from 192.168.1.255"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['ip_address'] == '192.168.1.255'
+
+    def test_leading_zeros_in_ip(self):
+        """Parse a log line with leading zeros in IP."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - Request from 010.020.030.040"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['ip_address'] == '010.020.030.040'
+
+    def test_message_with_numbers(self):
+        """Parse a log line with numbers in message."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - Error code 404 from 192.168.1.1"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['message'] == 'Error code 404'
+
+    def test_message_with_special_characters(self):
+        """Parse a log line with special characters in message."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - Alert: [!] Critical failure from 192.168.1.1"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['message'] == 'Alert: [!] Critical failure'
+
+    def test_message_with_at_sign(self):
+        """Parse a log line with @ in message."""
+        line = "[WARNING] 2024-01-15 10:30:00 - user1 - Notify @admin from 10.0.0.1"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['message'] == 'Notify @admin'
+
+    def test_message_with_hash(self):
+        """Parse a log line with # in message."""
+        line = "[INFO] 2024-01-15 10:30:00 - user1 - Issue #1234 from 10.0.0.1"
+        result = parse_log_line(line)
+        assert result is not None
+        assert result['message'] == 'Issue #1234'
+
+    def test_message_with_plus_sign(self):
+        """Parse a log line with + in message."""
+        line = "[ERROR] 2024-01-15 10:30:00 - user1 - Error+warning from 192.1

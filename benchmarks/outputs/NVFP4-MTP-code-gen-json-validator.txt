@@ -1,0 +1,131 @@
+```python
+import re
+from typing import Any, Dict, List, Tuple
+
+
+class JSONValidator:
+    """Validates JSON data against a JSON Schema–like specification.
+
+    Supported types: string, number, integer, boolean, array, object, null.
+    Supported constraints: required, minLength, maxLength, minimum, maximum,
+    pattern (regex), enum.
+    """
+
+    @staticmethod
+    def validate(data: Any, schema: Dict[str, Any]) -> Tuple[bool, List[str]]:
+        """Validate *data* against *schema* and return ``(is_valid, errors)``."""
+        errors: List[str] = []
+        _validate(data, schema, errors)
+        return (len(errors) == 0, errors)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_TYPE_NAMES: Dict[type, str] = {
+    type(None): "null",
+    bool: "boolean",
+    int: "integer",
+    float: "number",
+    str: "string",
+    list: "array",
+    dict: "object",
+}
+
+
+def _type_name(value: Any) -> str:
+    """Return a human-readable type label for *value*."""
+    if isinstance(value, bool):
+        return "boolean"  # bool is a subclass of int in Python
+    tp = type(value)
+    return _TYPE_NAMES.get(tp, tp.__name__)
+
+
+def _type_matches(value: Any, expected_type: str) -> bool:
+    """Return *True* when *value* matches *expected_type*."""
+    if expected_type == "null":
+        return value is None
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "object":
+        return isinstance(value, dict)
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Constraint checkers
+# ---------------------------------------------------------------------------
+
+def _check_string_constraints(value: str, schema: Dict[str, Any], errors: List[str]) -> None:
+    if "minLength" in schema:
+        if len(value) < schema["minLength"]:
+            errors.append(
+                f"String length {len(value)} is less than minimum required length "
+                f"{schema['minLength']}."
+            )
+    if "maxLength" in schema:
+        if len(value) > schema["maxLength"]:
+            errors.append(
+                f"String length {len(value)} exceeds maximum allowed length "
+                f"{schema['maxLength']}."
+            )
+    if "pattern" in schema:
+        if not re.search(schema["pattern"], value):
+            errors.append(
+                f"String '{value}' does not match required pattern "
+                f"'{schema['pattern']}'."
+            )
+
+
+def _check_number_constraints(value: (int, float), schema: Dict[str, Any], errors: List[str]) -> None:
+    if "minimum" in schema:
+        if value < schema["minimum"]:
+            errors.append(
+                f"Value {value} is less than minimum required value "
+                f"{schema['minimum']}."
+            )
+    if "maximum" in schema:
+        if value > schema["maximum"]:
+            errors.append(
+                f"Value {value} exceeds maximum allowed value {schema['maximum']}."
+            )
+
+
+def _check_array_constraints(value: list, schema: Dict[str, Any], errors: List[str]) -> None:
+    if "items" not in schema:
+        return
+    item_schema = schema["items"]
+    for i, item in enumerate(value):
+        item_errors: List[str] = []
+        _validate(item, item_schema, item_errors)
+        if item_errors:
+            errors.append(f"Array element at index {i}: {item_errors[0]}")
+
+
+def _check_object_constraints(value: dict, schema: Dict[str, Any], errors: List[str]) -> None:
+    if "required" in schema:
+        for field in schema["required"]:
+            if field not in value:
+                errors.append(f"Missing required field '{field}'.")
+
+    properties = schema.get("properties", {})
+    for field_name, field_schema in properties.items():
+        if field_name in value:
+            field_errors: List[str] = []
+            _validate(value[field_name], field_schema, field_errors)
+            if field_errors:
+                errors.append(f"Field '{field_name}': {field_errors[0]}")
+
+
+def _check_enum(value: Any, schema: Dict[str, Any], errors: List[str]) -> None:
+    if "enum" in schema:
+        if value not in schema["enum"]:

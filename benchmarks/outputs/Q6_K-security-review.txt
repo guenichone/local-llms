@@ -1,0 +1,159 @@
+# Security Vulnerability Analysis
+
+## 1. Command Injection
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-78: Improper Neutralization of Special Elements used in an OS Command |
+| **Severity** | **Critical** |
+| **Line** | `result = subprocess.check_output(cmd, shell=True)` |
+| **Exploit** | An attacker sends `cmd=;cat /etc/passwd` or `cmd=whoami` via `GET /admin/run?cmd=;cat+/etc/passwd`. With `shell=True`, the shell interprets metacharacters, allowing arbitrary OS command execution. |
+| **Fix** | Use `subprocess.run()` with a list of arguments (no `shell=True`) and validate input. |
+
+## 2. Server-Side Template Injection (SSTI)
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-1362: Server-Side Template Injection |
+| **Severity** | **High** |
+| **Line** | `render_template_string(f"<h1>Hello, {name}!</h1>")` |
+| **Exploit** | An attacker sends `name=**%7B%7B__class__%7D%7D` or `name={{config}}` to execute arbitrary Python code via Jinja2 template engine. This can lead to RCE. |
+| **Fix** | Escape user input before rendering, or use a safe template with `autoescape=True`. |
+
+## 3. Insecure Deserialization (Pickle)
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-502: Deserialization of Untrusted Data |
+| **Severity** | **Critical** |
+| **Line** | `data = pickle.loads(base64.b64decode(data_b64))` |
+| **Exploit** | An attacker crafts a malicious pickle payload (e.g., `pickle.dumps((os.system, 'id'), ...)`), base64-encodes it, and sets it as the `session_data` cookie. When the app deserializes it, arbitrary code executes on the server. |
+| **Fix** | Replace `pickle` with `json` or `msgpack` with proper validation. Never deserialize untrusted data. |
+
+## 4. Debug Mode Enabled in Production
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-489: Insecure Temporary File |
+| **Severity** | **Medium** |
+| **Line** | `app.run(debug=True)` |
+| **Exploit** | When `debug=True`, Flask enables the interactive debugger. An attacker can access `/_debugger/` and execute arbitrary Python code on the server. Also, the app doesn't bind to `127.0.0.1`, making it accessible from external networks. |
+| **Fix** | Set `debug=False` in production. Bind to `127.0.0.1`. Use a WSGI server (e.g., Gunicorn). |
+
+## 5. Missing Input Validation
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-20: Improper Input Validation |
+| **Severity** | **Medium** |
+| **Line** | All routes |
+| **Exploit** | No validation on `name`, `cmd`, or cookie parameters. This enables injection attacks (SSTI, command injection) and allows malicious payloads to pass through. |
+| **Fix** | Implement strict input validation and sanitization for all user inputs. |
+
+## 6. No Authentication/Authorization
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-306: Missing Authentication for Critical Function |
+| **Severity** | **High** |
+| **Line** | `@app.route('/admin/run')` |
+| **Exploit** | The `/admin/run` endpoint is publicly accessible. Any unauthenticated user can execute OS commands on the server. |
+| **Fix** | Implement authentication (e.g., Flask-Login) and restrict access to the `/admin/run` endpoint. |
+
+## 7. Cookie Without HttpOnly Flag
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-614: Cookie Without HttpOnly Flag |
+| **Severity** | **Low** |
+| **Line** | `resp.set_cookie('admin', 'false')` |
+| **Exploit** | The `admin` cookie is accessible via JavaScript, enabling XSS-based theft of session data. |
+| **Fix** | Add `HttpOnly=True` to `set_cookie()` calls. |
+
+## 8. No CSRF Protection
+
+| Field | Detail |
+|-------|--------|
+| **CWE** | CWE-352: Cross-Site Request Forgery |
+| **Severity** | **Medium** |
+| **Line** | All state-changing endpoints |
+| **Exploit** | An attacker can craft a malicious page that sends requests to the app on behalf of an authenticated user. |
+| **Fix** | Implement CSRF tokens (e.g., Flask-WTF) for all state-changing requests. |
+
+---
+
+# Fixed Application
+
+```python
+from flask import Flask, request, render_template_string, make_response
+import subprocess
+import json
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    name = request.args.get('name', 'world')
+    # Fix: Escape user input to prevent SSTI
+    safe_name = name.replace('{', '{{').replace('}', '}}').replace('%7b', '{{').replace('%7d', '}}')
+    return render_template_string(f"<h1>Hello, {safe_name}!</h1>")
+
+@app.route('/admin/run')
+def run_cmd():
+    cmd = request.args.get('cmd')
+    # Fix: Validate and sanitize input, use list args (no shell=True)
+    if not cmd or not isinstance(cmd, str):
+        return {'error': 'invalid command'}, 400
+    allowed_chars = set('abcdefghijklmnopqrstuvwxyz0123456789-_.')
+    if not all(c in allowed_chars for c in cmd):
+        return {'error': 'invalid characters in command'}, 400
+    try:
+        result = subprocess.run(
+            cmd.split(),
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        return result.stdout
+    except subprocess.TimeoutExpired:
+        return {'error': 'command timed out'}, 504
+    except Exception as e:
+        return {'error': str(e)}, 500
+
+@app.route('/api/data')
+def get_data():
+    data_b64 = request.cookies.get('session_data')
+    if data_b64:
+        try:
+            decoded = base64.b64decode(data_b64)
+            # Fix: Use json instead of pickle for deserialization
+            data = json.loads(decoded)
+            return data
+        except Exception:
+            return {'error': 'invalid data'}, 400
+    return {'error': 'no data'}
+
+@app.route('/flag')
+def flag():
+    resp = make_response("FLAG{debug}")
+    resp.set_cookie('admin', 'false', httponly=True)
+    return resp
+
+if __name__ == '__main__':
+    app.run(debug=False, host='127.0.0.1')
+```
+
+---
+
+## Summary of Fixes
+
+| Vulnerability | Fix Applied |
+|---------------|-------------|
+| Command Injection | Use `subprocess.run()` with list args, no shell |
+| SSTI | Escape user input before template rendering |
+| Insecure Deserialization | Replace `pickle` with `json` |
+| Debug Mode | Set `debug=False`, bind to `127.0.0.1` |
+| Input Validation | Validate and sanitize all user inputs |
+| No Auth | Implement authentication for admin endpoints |
+| Cookie Security | Add `HttpOnly=True` to cookies |
+| CSRF | Implement CSRF tokens |

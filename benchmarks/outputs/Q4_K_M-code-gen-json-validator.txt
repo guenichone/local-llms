@@ -1,0 +1,167 @@
+```python
+"""JSON Schema Validator supporting common types and constraints."""
+
+import re
+from typing import Any, Dict, List, Tuple, Union
+
+
+class JSONValidator:
+    """Validates JSON data against a schema with support for common types and constraints.
+
+    Supported types:
+        string, number, integer, boolean, array, object, null
+
+    Supported constraints:
+        required, minLength, maxLength, minimum, maximum, pattern (regex), enum
+    """
+
+    TYPE_MAP = {
+        "string": str,
+        "number": (int, float),
+        "integer": int,
+        "boolean": bool,
+        "array": list,
+        "object": dict,
+        "null": type(None),
+    }
+
+    def validate(self, data: Any, schema: Dict[str, Any]) -> Tuple[bool, List[str]]:
+        """Validate data against a JSON schema.
+
+        Args:
+            data: The JSON data to validate.
+            schema: The schema dict to validate against.
+
+        Returns:
+            A tuple of (is_valid, error_messages) where error_messages is a list
+            of human-readable error strings.
+        """
+        self._errors: List[str] = []
+        self._validate(data, schema, path="$")
+        return (len(self._errors) == 0, self._errors)
+
+    # ------------------------------------------------------------------
+    # Core validation entry point
+    # ------------------------------------------------------------------
+
+    def _validate(self, data: Any, schema: Dict[str, Any], path: str = "$") -> None:
+        """Recursively validate *data* against *schema* at *path*."""
+
+        # 1. Type check (if schema specifies a type)
+        expected_type = schema.get("type")
+        if expected_type is not None:
+            if not self._check_type(data, expected_type):
+                self._errors.append(
+                    f"at '{path}': expected type '{expected_type}' but got '{self._type_name(data)}'"
+                )
+                return  # No point in further checks once type is wrong
+
+        # 2. Object-specific handling (required, properties)
+        if expected_type == "object":
+            self._validate_object(data, schema, path)
+
+        # 3. Type-specific constraints (applied when the data already passed the type check)
+        if isinstance(data, str):
+            self._check_string_constraints(data, schema, path)
+        elif isinstance(data, (int, float)) and not isinstance(data, bool):
+            self._check_numeric_constraints(data, schema, path)
+        elif isinstance(data, bool):
+            self._check_boolean_constraints(data, schema, path)
+        elif isinstance(data, list):
+            self._check_array_constraints(data, schema, path)
+        elif isinstance(data, dict):
+            self._check_object_constraints(data, schema, path)
+
+        # 4. Cross-type constraints (applied regardless of type)
+        self._check_enum(data, schema, path)
+
+    # ------------------------------------------------------------------
+    # Type checking
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _check_type(data: Any, expected_type: str) -> bool:
+        """Return True if *data* conforms to *expected_type*."""
+        if expected_type not in JSONValidator.TYPE_MAP:
+            return True  # Unknown type → skip
+
+        expected = JSONValidator.TYPE_MAP[expected_type]
+
+        # Boolean is a subclass of int in Python; must be handled explicitly.
+        if expected_type == "integer":
+            return isinstance(data, int) and not isinstance(data, bool)
+        if expected_type == "number":
+            return isinstance(data, (int, float)) and not isinstance(data, bool)
+
+        return isinstance(data, expected)
+
+    @staticmethod
+    def _type_name(data: Any) -> str:
+        """Return a human-readable name for a Python type."""
+        if data is None:
+            return "null"
+        if isinstance(data, bool):
+            return "boolean"
+        if isinstance(data, int):
+            return "integer"
+        if isinstance(data, float):
+            return "number"
+        if isinstance(data, str):
+            return "string"
+        if isinstance(data, list):
+            return "array"
+        if isinstance(data, dict):
+            return "object"
+        return type(data).__name__
+
+    # ------------------------------------------------------------------
+    # Object validation
+    # ------------------------------------------------------------------
+
+    def _validate_object(self, data: dict, schema: Dict[str, Any], path: str) -> None:
+        """Validate object-specific schema features."""
+        required = schema.get("required", [])
+        if not isinstance(data, dict):
+            return
+
+        for key in required:
+            if key not in data:
+                self._errors.append(f"at '{path}': property '{key}' is required")
+
+        properties = schema.get("properties", {})
+        for key, prop_schema in properties.items():
+            if key in data:
+                self._validate(data[key], prop_schema, path=f"{path}.{key}")
+
+    def _check_object_constraints(self, data: dict, schema: Dict[str, Any], path: str) -> None:
+        """Check object-level cardinality constraints."""
+        min_properties = schema.get("minProperties")
+        if min_properties is not None and len(data) < min_properties:
+            self._errors.append(
+                f"at '{path}': object has {len(data)} properties, minimum is {min_properties}"
+            )
+        max_properties = schema.get("maxProperties")
+        if max_properties is not None and len(data) > max_properties:
+            self._errors.append(
+                f"at '{path}': object has {len(data)} properties, maximum is {max_properties}"
+            )
+
+    # ------------------------------------------------------------------
+    # String constraints
+    # ------------------------------------------------------------------
+
+    def _check_string_constraints(self, data: str, schema: Dict[str, Any], path: str) -> None:
+        min_length = schema.get("minLength")
+        if min_length is not None and len(data) < min_length:
+            self._errors.append(
+                f"at '{path}': string length {len(data)} is less than minimum {min_length}"
+            )
+
+        max_length = schema.get("maxLength")
+        if max_length is not None and len(data) > max_length:
+            self._errors.append(
+                f"at '{path}': string length {len(data)} is greater than maximum {max_length}"
+            )
+
+        pattern = schema.get("pattern")
+        if pattern is not None and not re.fullmatch(pattern, data):

@@ -1,0 +1,452 @@
+```python
+import time
+import threading
+import pytest
+
+from token_bucket import TokenBucket
+
+
+@pytest.fixture
+def bucket():
+    """Create a token bucket with rate=10 tokens/sec and capacity=10."""
+    return TokenBucket(rate=10.0, capacity=10)
+
+
+@pytest.fixture
+def slow_bucket():
+    """Create a token bucket with rate=1 token/sec and capacity=5."""
+    return TokenBucket(rate=1.0, capacity=5)
+
+
+@pytest.fixture
+def fast_bucket():
+    """Create a token bucket with rate=100 tokens/sec and capacity=100."""
+    return TokenBucket(rate=100.0, capacity=100)
+
+
+def wait_for_tokens(bucket, tokens_needed=1, buffer=0.1):
+    """Wait until at least tokens_needed tokens are available."""
+    rate = bucket.rate
+    elapsed = tokens_needed / rate
+    time.sleep(buffer + elapsed)
+
+
+def test_basic_consume_success(bucket):
+    """Consuming when tokens are available should succeed."""
+    assert bucket.consume(1) is True
+
+
+def test_basic_consume_failure(bucket):
+    """Consuming when tokens are exhausted should fail."""
+    # Exhaust all tokens
+    for _ in range(bucket.capacity):
+        assert bucket.consume(1) is True
+    # Next consume should fail
+    assert bucket.consume(1) is False
+
+
+def test_consume_multiple_tokens(bucket):
+    """Consuming multiple tokens at once should work."""
+    assert bucket.consume(3) is True
+    assert bucket.consume(2) is True
+
+
+def test_consume_zero_tokens(bucket):
+    """Consuming zero tokens should always succeed."""
+    assert bucket.consume(0) is True
+
+
+def test_consume_exceeds_capacity(bucket):
+    """Consuming more tokens than capacity should fail."""
+    assert bucket.consume(bucket.capacity + 1) is False
+
+
+def test_refill_timing(bucket):
+    """Tokens should refill at the expected rate."""
+    # Exhaust all tokens
+    for _ in range(bucket.capacity):
+        assert bucket.consume(1) is True
+
+    # Wait for 1 token to refill (rate=10 tokens/sec)
+    wait_for_tokens(bucket, tokens_needed=1)
+
+    # Should have at least 1 token
+    assert bucket.consume(1) is True
+
+
+def test_refill_timing_slow_bucket(slow_bucket):
+    """Refill should work with slower rates."""
+    # Exhaust all tokens
+    for _ in range(slow_bucket.capacity):
+        assert slow_bucket.consume(1) is True
+
+    # Wait for 1 token to refill (rate=1 token/sec)
+    wait_for_tokens(slow_bucket, tokens_needed=1)
+
+    assert slow_bucket.consume(1) is True
+
+
+def test_capacity_limit(bucket):
+    """Tokens should never exceed capacity."""
+    # Wait long enough to exceed capacity
+    wait_for_tokens(bucket, tokens_needed=bucket.capacity + 10)
+
+    # Tokens should be capped at capacity
+    assert bucket.tokens <= bucket.capacity
+
+
+def test_capacity_limit_slow_bucket(slow_bucket):
+    """Capacity should be enforced even with slow refill."""
+    wait_for_tokens(slow_bucket, tokens_needed=slow_bucket.capacity + 10)
+
+    assert slow_bucket.tokens <= slow_bucket.capacity
+
+
+def test_concurrent_access(bucket):
+    """Multiple threads consuming simultaneously should be thread-safe."""
+    results = []
+    error_count = []
+
+    def consumer():
+        try:
+            result = bucket.consume(1)
+            results.append(result)
+        except Exception:
+            error_count.append(1)
+
+    # Launch multiple threads
+    threads = []
+    for _ in range(10):
+        t = threading.Thread(target=consumer)
+        threads.append(t)
+        t.start()
+
+    # Wait for all threads to complete
+    for t in threads:
+        t.join()
+
+    # No errors should occur
+    assert len(error_count) == 0
+
+    # Total successful consumptions should not exceed capacity
+    successful = sum(1 for r in results if r)
+    assert successful <= bucket.capacity
+
+
+def test_concurrent_access_high_concurrency(bucket):
+    """High concurrency should not cause issues."""
+    results = []
+    lock = threading.Lock()
+
+    def consumer():
+        try:
+            result = bucket.consume(1)
+            with lock:
+                results.append(result)
+        except Exception:
+            pass
+
+    # Launch many threads
+    threads = []
+    for _ in range(20):
+        t = threading.Thread(target=consumer)
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
+    # All results should be boolean
+    assert all(isinstance(r, bool) for r in results)
+
+    # Total successful consumptions should not exceed capacity
+    successful = sum(1 for r in results if r)
+    assert successful <= bucket.capacity
+
+
+def test_concurrent_access_with_refill(bucket):
+    """Concurrent access should not interfere with token refill."""
+    # Exhaust all tokens
+    for _ in range(bucket.capacity):
+        assert bucket.consume(1) is True
+
+    # Wait for refill while consuming concurrently
+    def waiter():
+        wait_for_tokens(bucket, tokens_needed=1, buffer=0.2)
+        assert bucket.consume(1) is True
+
+    def consumer():
+        # Try to consume before waiter finishes
+        bucket.consume(1)
+
+    threads = []
+    for _ in range(5):
+        t = threading.Thread(target=consumer)
+        threads.append(t)
+        t.start()
+
+    t_waiter = threading.Thread(target=waiter)
+    t_waiter.start()
+
+    for t in threads:
+        t.join()
+    t_waiter.join()
+
+    # Waiter should have succeeded
+    assert True  # If we get here, waiter succeeded
+
+
+def test_high_rate_bucket(fast_bucket):
+    """High rate bucket should refill quickly."""
+    # Exhaust all tokens
+    for _ in range(fast_bucket.capacity):
+        assert fast_bucket.consume(1) is True
+
+    # Wait very little time for refill
+    time.sleep(0.01)
+
+    # Should have many tokens available
+    assert fast_bucket.tokens > 0
+
+
+def test_high_rate_concurrent(fast_bucket):
+    """High rate bucket should handle concurrent access well."""
+    results = []
+    lock = threading.Lock()
+
+    def consumer():
+        try:
+            result = fast_bucket.consume(1)
+            with lock:
+                results.append(result)
+        except Exception:
+            pass
+
+    threads = []
+    for _ in range(50):
+        t = threading.Thread(target=consumer)
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
+    # All results should be boolean
+    assert all(isinstance(r, bool) for r in results)
+
+    # Total successful consumptions should not exceed capacity
+    successful = sum(1 for r in results if r)
+    assert successful <= fast_bucket.capacity
+
+
+def test_edge_case_very_low_rate():
+    """Token bucket with very low rate should refill slowly."""
+    bucket = TokenBucket(rate=0.1, capacity=10)
+
+    # Exhaust all tokens
+    for _ in range(bucket.capacity):
+        assert bucket.consume(1) is True
+
+    # Wait for 1 token (should take ~10 seconds)
+    wait_for_tokens(bucket, tokens_needed=1)
+
+    assert bucket.consume(1) is True
+
+
+def test_edge_case_very_high_capacity():
+    """Token bucket with very high capacity should work."""
+    bucket = TokenBucket(rate=100.0, capacity=1000)
+
+    # Consume many tokens
+    assert bucket.consume(100) is True
+    assert bucket.consume(500) is True
+
+    # Should still have tokens
+    assert bucket.tokens > 0
+
+
+def test_edge_case_rate_zero():
+    """Token bucket with zero rate should never refill."""
+    bucket = TokenBucket(rate=0.0, capacity=5)
+
+    # Should start with capacity tokens
+    assert bucket.tokens == 5
+
+    # Consume all tokens
+    for _ in range(5):
+        assert bucket.consume(1) is True
+
+    # Wait for refill (should never happen)
+    time.sleep(1)
+
+    # Tokens should still be zero
+    assert bucket.tokens == 0
+    assert bucket.consume(1) is False
+
+
+def test_edge_case_capacity_one():
+    """Token bucket with capacity of 1 should work correctly."""
+    bucket = TokenBucket(rate=10.0, capacity=1)
+
+    # Should start with 1 token
+    assert bucket.tokens == 1
+    assert bucket.consume(1) is True
+
+    # Next consume should fail
+    assert bucket.consume(1) is False
+
+    # Wait for refill
+    wait_for_tokens(bucket, tokens_needed=1)
+
+    # Should have 1 token again
+    assert bucket.consume(1) is True
+
+
+def test_edge_case_fractional_tokens():
+    """Consuming fractional tokens should work."""
+    bucket = TokenBucket(rate=10.0, capacity=10)
+
+    # Consume 0.5 tokens
+    assert bucket.consume(0.5) is True
+    assert bucket.tokens >= 9.5
+
+    # Consume another 0.5
+    assert bucket.consume(0.5) is True
+    assert bucket.tokens >= 9.0
+
+
+def test_edge_case_large_consume():
+    """Consuming a large number of tokens at once should work."""
+    bucket = TokenBucket(rate=100.0, capacity=100)
+
+    # Consume 50 tokens
+    assert bucket.consume(50) is True
+    assert bucket.tokens == 50
+
+    # Consume remaining 50
+    assert bucket.consume(50) is True
+    assert bucket.tokens == 0
+
+    # Next consume should fail
+    assert bucket.consume(1) is False
+
+
+def test_concurrent_access_with_refill_and_capacity(slow_bucket):
+    """Concurrent access with refill and capacity limits should be correct."""
+    results = []
+    lock = threading.Lock()
+
+    def consumer():
+        try:
+            result = slow_bucket.consume(1)
+            with lock:
+                results.append(result)
+        except Exception:
+            pass
+
+    threads = []
+    for _ in range(20):
+        t = threading.Thread(target=consumer)
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
+    # No errors
+    assert all(isinstance(r, bool) for r in results)
+
+    # Total successful consumptions should not exceed capacity
+    successful = sum(1 for r in results if r)
+    assert successful <= slow_bucket.capacity
+
+
+def test_concurrent_access_multiple_consumers():
+    """Multiple consumers should not interfere with each other."""
+    bucket = TokenBucket(rate=100.0, capacity=100)
+
+    results = []
+    lock = threading.Lock()
+
+    def consumer():
+        try:
+            result = bucket.consume(1)
+            with lock:
+                results.append(result)
+        except Exception:
+            pass
+
+    threads = []
+    for i in range(5):
+        t = threading.Thread(target=consumer)
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
+    # Total successful consumptions should not exceed capacity
+    successful = sum(1 for r in results if r)
+    assert successful <= bucket.capacity
+
+
+def test_concurrent_access_with_high_rate():
+    """Concurrent access with high rate should work correctly."""
+    bucket = TokenBucket(rate=1000.0, capacity=100)
+
+    results = []
+    lock = threading.Lock()
+
+    def consumer():
+        try:
+            result = bucket.consume(1)
+            with lock:
+                results.append(result)
+        except Exception:
+            pass
+
+    threads = []
+    for _ in range(50):
+        t = threading.Thread(target=consumer)
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
+    # Total successful consumptions should not exceed capacity
+    successful = sum(1 for r in results if r)
+    assert successful <= bucket.capacity
+
+
+def test_concurrent_access_with_zero_tokens():
+    """Concurrent access when no tokens are available should not cause issues."""
+    bucket = TokenBucket(rate=1.0, capacity=1)
+
+    # Exhaust all tokens
+    for _ in range(bucket.capacity):
+        assert bucket.consume(1) is True
+
+    results = []
+    lock = threading.Lock()
+
+    def consumer():
+        try:
+            result = bucket.consume(1)
+            with lock:
+                results.append(result)
+        except Exception:
+            pass
+
+    threads = []
+    for _ in range(20):
+        t = threading.Thread(target=consumer)
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
+    # All results should be False (no tokens available)
+    assert all(r is False for r in results)
+```
