@@ -1,0 +1,100 @@
+{
+  "date": "2026-07-07",
+  "gpu": "NVIDIA GeForce RTX 5080 16GB",
+  "cuda": "12.8.57",
+  "os": "WSL2 Ubuntu 24.04",
+  "llama_cpp_base": "4fc4ec5 (upstream master)",
+  "patches": "https://github.com/thecodacus/llama.cpp branches fable5/host-register + fable5/prefetch-experts",
+  "fork": "https://github.com/guenichone/llama.cpp branch fable5-optimizations",
+  "model": "Ornith-1.0-9B Q5_K_M",
+  "benchmark_tool": "llama-bench",
+  "parameters": {
+    "threads": 4,
+    "prompt_tokens": 512,
+    "generation_tokens": 128,
+    "temp": 0,
+    "seed": 42
+  },
+  "results": [
+    {
+      "offload": "ngl_0_all_cpu",
+      "test": "pp512",
+      "vanilla_t_s": 751.13,
+      "patched_t_s": 1771.79,
+      "speedup_pct": 135.9,
+      "env": "GGML_CUDA_REGISTER_HOST=1",
+      "notes": "All layers on CPU, mmap pinning eliminates pageable-copy loss"
+    },
+    {
+      "offload": "ngl_0_all_cpu",
+      "test": "tg128",
+      "vanilla_t_s": 6.72,
+      "patched_t_s": 6.93,
+      "speedup_pct": 3.1,
+      "env": "GGML_CUDA_REGISTER_HOST=1",
+      "notes": "Decode unaffected (expected, runs directly on CPU)"
+    },
+    {
+      "offload": "ngl_20_partial",
+      "test": "pp512",
+      "vanilla_t_s": 2077.32,
+      "patched_t_s": 3257.18,
+      "speedup_pct": 56.8,
+      "env": "GGML_CUDA_REGISTER_HOST=1",
+      "notes": "20 layers on GPU, rest on CPU — significant prefill boost"
+    },
+    {
+      "offload": "ngl_20_partial",
+      "test": "tg128",
+      "vanilla_t_s": 17.51,
+      "patched_t_s": 17.47,
+      "speedup_pct": -0.2,
+      "env": "GGML_CUDA_REGISTER_HOST=1",
+      "notes": "Decode unaffected"
+    },
+    {
+      "offload": "ngl_99_all_gpu",
+      "test": "pp512",
+      "vanilla_t_s": 5935.07,
+      "patched_t_s": 5812.99,
+      "speedup_pct": -2.1,
+      "env": "GGML_CUDA_REGISTER_HOST=1",
+      "notes": "All layers on GPU, no H2D copies needed — no change (expected)"
+    },
+    {
+      "offload": "ngl_99_all_gpu",
+      "test": "tg128",
+      "vanilla_t_s": 107.40,
+      "patched_t_s": 108.03,
+      "speedup_pct": 0.6,
+      "env": "GGML_CUDA_REGISTER_HOST=1",
+      "notes": "Decode unaffected"
+    }
+  ],
+  "verification": {
+    "output_identical": true,
+    "method": "Deterministic generation with temp=0, seed=42, diff of outputs excluding timing lines",
+    "vanilla_hash": "b1-4fc4ec5",
+    "patched_hash": "b2-42c0902"
+  },
+  "optimizations_applied": {
+    "patch_1_mmap_pinning": {
+      "files": ["src/llama-mmap.cpp", "src/llama-mmap.h", "src/llama-model-loader.cpp"],
+      "description": "Wires up existing GGML_CUDA_REGISTER_HOST code to cudaHostRegister mmap pages",
+      "env_var": "GGML_CUDA_REGISTER_HOST=1"
+    },
+    "patch_2_3_expert_prefetch": {
+      "files": ["ggml/src/ggml-backend.cpp"],
+      "description": "Overlaps offloaded MoE expert weight uploads with compute using 2nd backend + staging slots",
+      "env_var": "GGML_SCHED_PREFETCH_EXPERTS=N (default 3)"
+    }
+  },
+  "subagent_review": {
+    "reviewer": "ornith-reviewer (Ornith-1.0-9B)",
+    "issues_found": {
+      "high": "Missing bounds check in register_host() — FIXED",
+      "medium": "prefetch_used array not fully reset on slot count reduction — FIXED",
+      "low": ["prefetch_cur not reset on disable — FIXED", "Hard-coded prefetch threshold"]
+    }
+  }
+}
