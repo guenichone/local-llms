@@ -124,6 +124,78 @@ cmake --build build --config Release -j $(nproc)
 
 Always run with `LD_LIBRARY_PATH=$HOME/.local/cuda-12.8/lib64:$LD_LIBRARY_PATH`.
 
+### Fable 5 Optimizations (Jul 2026)
+
+Based on the [I Asked Claude Fable 5 to Improve llama.cpp](https://www.youtube.com/watch?v=VytSYCDhWQ0) experiment by TheCodacus. We applied the 2 winning optimizations from their [fork](https://github.com/thecodacus/llama.cpp) (branches `fable5/host-register`, `fable5/prefetch-experts`).
+
+Our fork with the patches: [guenichone/llama.cpp:fable5-optimizations](https://github.com/guenichone/llama.cpp/tree/fable5-optimizations)
+
+#### Optimizations Applied
+
+| # | Optimization | What It Does | Env Var | Status |
+|---|---|---|---|---|
+| 1 | **Mmap pinning** | `cudaHostRegister` the mmap'd CPU weight pages for faster H2D transfers | `GGML_CUDA_REGISTER_HOST=1` | Working |
+| 2 | **Expert prefetch** | Upload full MoE expert tensors through 2nd backend instance overlapping with compute | `GGML_SCHED_PREFETCH_EXPERTS=N` | Working |
+| 3 | Adaptive spec controller | Dynamically adjust draft length for offloaded MoE | — | Lost (author's finding) |
+| 4 | CPU+GPU split work | Split expert work between CPU and GPU on same layer | — | Lost (PCIe bottleneck) |
+
+#### Benchmark Results — Ornith 9B Q5_K_M (RTX 5080, CUDA 12.8)
+
+| Scenario | Vanilla (t/s) | Patched (t/s) | Speedup |
+|---|---|---|---|
+| `-ngl 0` (all CPU) pp512 | 751 | **1,771** | **+135%** |
+| `-ngl 0` (all CPU) tg128 | 6.72 | 6.93 | +3% |
+| `-ngl 20` (partial) pp512 | 2,077 | **3,257** | **+57%** |
+| `-ngl 20` (partial) tg128 | 17.51 | 17.47 | same |
+| `-ngl 99` (all GPU) pp512 | 5,935 | 5,812 | -2% |
+| `-ngl 99` (all GPU) tg128 | 107.40 | 108.03 | +0.6% |
+
+**Key findings:**
+- Mmap pinning gives **massive gains when weights are in system RAM** (all/partial offload)
+- No change on fully GPU-resident models (expected — no H2D copies)
+- Decode speed unaffected (expected — decode runs on device holding the weights)
+- Output verified **token-identical** to vanilla llama.cpp
+
+#### Building the Patched Version
+
+```bash
+cd ~/llama.cpp
+git checkout fable5-optimizations
+export PATH=$HOME/.local/cuda-12.8/bin:$PATH
+cmake -B build-patched \
+  -DGGML_CUDA=ON -DGGML_FLASH_ATTN=ON \
+  -DCMAKE_CUDA_ARCHITECTURES="120" \
+  -DCUDAToolkit_ROOT=$HOME/.local/cuda-12.8 \
+  -DGGML_CUDA_FULL_MMVQ=OFF \
+  -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath,$HOME/.local/cuda-12.8/lib64" \
+  -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath,$HOME/.local/cuda-12.8/lib64"
+cmake --build build-patched --config Release -j $(nproc)
+```
+
+#### Running with Optimizations
+
+```bash
+export LD_LIBRARY_PATH=$HOME/.local/cuda-12.8/lib64:$LD_LIBRARY_PATH
+
+# Mmap pinning only (works on any model with partial offload)
+GGML_CUDA_REGISTER_HOST=1 ~/llama.cpp/build-patched/bin/llama-server \
+  -m ~/models/ornith-1.0-9b/ornith-1.0-9b-Q5_K_M.gguf \
+  -ngl 99 --port 8082 --host 127.0.0.1
+
+# MoE expert prefetch (requires MoE model with offloaded layers)
+GGML_SCHED_PREFETCH_EXPERTS=3 GGML_CUDA_REGISTER_HOST=1 \
+  ~/llama.cpp/build-patched/bin/llama-cli \
+  -m ~/models/qwen3.6-35b-a3b/Qwen_Qwen3.6-35B-A3B-IQ3_XXS.gguf \
+  -ngl 20 -ncmoe 26 -p "Write fibonacci..."
+```
+
+#### Subagent Code Review Findings
+
+Our subagent found and we fixed:
+- **HIGH**: Missing bounds check in `register_host()` (could pass OOB pointer to `cudaHostRegister`)
+- **MEDIUM**: `prefetch_used` array not fully reset on slot count reduction
+- **LOW**: `prefetch_cur` not reset on disable
+
 ## Models
 
 | Model | Size | Quant | Location | Notes |
@@ -134,6 +206,7 @@ Always run with `LD_LIBRARY_PATH=$HOME/.local/cuda-12.8/lib64:$LD_LIBRARY_PATH`.
 | Ornith-1.0-9B (fallback) | 9B | Q4_K_M (5.3 GB) | `~/models/ornith-1.0-9b/ornith-1.0-9b-Q4_K_M.gguf` | Faster, lower quality |
 | Gemma 4 E4B | 4B | Q4_K_M (3 GB) | `~/models/gemma4-4b/gemma-4-E4B-it-Q4_K_M.gguf` | Fast, CPU-friendly |
 | Gemma 4 31B QAT | 31B | Q4_0 (17 GB) | `C:/Users/.../lmstudio-community/gemma-4-31B-it-QAT-GGUF/` | Needs `-ngl 30` on 16GB |
+| Qwen3.6-35B-A3B MoE | 35B (3B active) | IQ3_XXS (15.8 GB) | `~/models/qwen3.6-35b-a3b/` | MoE, 256 experts, for prefetch bench |
 
 ## Ornith Knowledge
 
