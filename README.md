@@ -1,260 +1,157 @@
-# Local LLMs Setup
+# Local LLMs — RTX 5080 WSL2 Setup
 
-WSL2 + RTX 5080 (16 GB VRAM, Blackwell sm_120), CUDA 12.8, llama.cpp.
+[![Platform: Linux](https://img.shields.io/badge/platform-WSL2%20%7C%20Ubuntu%2024.04-orange.svg)](#hardware)
+[![GPU: RTX 5080](https://img.shields.io/badge/GPU-RTX%205080-76B900.svg)](#hardware)
+[![CUDA: 12.8](https://img.shields.io/badge/CUDA-12.8-green.svg)](#cuda-build)
+
+Curated configuration and benchmarks for running local LLMs on a consumer RTX 5080 GPU (16 GB VRAM, Blackwell sm_120) under WSL2. Covers CUDA build workarounds, optimal llama.cpp server flags, agent wiring, and model quantization benchmarks.
 
 ## Quick Reference
 
 ```bash
-# ── Claude Code ──
-claude-or                          # Opus 4.8 via OpenRouter ($)
-claude-or "claude-sonnet-5" -p hi  # Sonnet 5, --print mode
-claude-or-sonnet                   # Alias for Sonnet 5
-claude-or-opus                     # Alias for Opus 4.8
-claude-or-haiku                    # Alias for Haiku 4.5
-claude-or-stop                     # Kill OpenRouter proxy
-
-ccornith                        # Ornith Q5 (local, free, ~30s delay)
-ccqwen                           # Qwen3.6-27B MTP (local)
-ccstop                           # Kill FCC proxies
-
-# ── OpenCode ──
-code                               # TUI model picker
-code ds                            # DeepSeek V4 Flash (OpenRouter)
-code ds-pro                        # DeepSeek V4 Pro (OpenRouter)
-code glm                           # GLM 5.2 (OpenRouter)
-code qwen                          # Qwen 3.6 27B (OpenRouter)
-code qwen-coder                    # Qwen 3 Coder Plus (OpenRouter)
-code ornith                        # Ornith Q5 (local llama.cpp)
-code local                         # Qwen3.6-27B MTP (local llama.cpp)
-
-# ── Ornith Server ──
-# Ornith 9B Q5_K_M — optimal: vanilla build, -t 6, flash-attn on
-llama-server \
-  -m ~/models/ornith-1.0-9b/ornith-1.0-9b-Q5_K_M.gguf \
-  -ngl 99 -t 6 -c 200000 --port 8082 --host 127.0.0.1 \
-  --temp 0.6 --top-p 0.95 --top-k 20 \
-  -ub 4096 -b 4096 --cache-reuse 256 \
-  --flash-attn on \
-  --reasoning-preserve \
-  --cache-type-k q8_0 --cache-type-v q8_0
-
-# ── Qwen Server ──
-# Qwen3.6-27B MTP — optimal: -t 8, q4_0 cache, 200K ctx via --no-kv-offload
-llama-server \
-  -m ~/models/qwen3.6-27b-mtp-Q3_K_S.gguf \
-  -ngl 99 -t 8 -c 200000 --port 8080 --host 127.0.0.1 \
-  --spec-type draft-mtp --spec-draft-n-max 2 \
-  --flash-attn on \
-  --no-kv-offload \
-  --cache-type-k q4_0 --cache-type-v q4_0
-
-# ── Hermes Agent ──
-hermes config set provider openai
-hermes config set api_key not-needed
-hermes config set base_url http://127.0.0.1:8082/v1
-hermes config set model /home/barrak/models/ornith-1.0-9b/ornith-1.0-9b-Q5_K_M.gguf
-
-# ── Utilities ──
-yt-transcript <video-id>            # metadata + transcript
-yt-transcript <video-id> --meta     # metadata only
-yt-transcript <video-id> --text     # plain transcript
-yt-transcript <video-id> --thumb    # download thumbnails
-yt-transcript <video-id> --screenshots 3  # capture frames
+claude-or                          # Claude Code via OpenRouter (Opus 4.8)
+ccornith                           # Claude Code via local Ornith Q5_K_M
+ccqwen                             # Claude Code via local Qwen3.6-27B MTP
+code                               # OpenCode model picker
+code ornith                        # OpenCode via local Ornith
+code local                         # OpenCode via local Qwen MTP
+yt-transcript <url>                # YouTube transcript + metadata
 ```
-
-## Shell Aliases
-
-Defined in `~/.zshrc.d/providers.zsh` (sourced from `.zshrc`).
-
-### `claude-or` — Claude Code via OpenRouter
-
-Runs Claude Code through a local proxy that translates model names to OpenRouter format.
-
-| Argument | OpenRouter Model |
-|---|---|
-| `claude-opus-4-8` (default) | `anthropic/claude-opus-4.8` |
-| `claude-sonnet-5` | `anthropic/claude-sonnet-5` |
-| `claude-haiku-4-5` | `anthropic/claude-haiku-4.5` |
-| `claude-fable-5` | `anthropic/claude-fable-5` |
-
-The proxy (`~/.claude/or-proxy.mjs`) runs on `localhost:8099`. Reads `OPENROUTER_API_KEY` from `.env`.
-
-### `ccornith` / `ccqwen` — Claude Code via Local Models
-
-Anthropic protocol proxy via free-claude-code (fcc). Auto-starts model-specific llama-server and fcc proxy.
-
-- **`ccornith`**: Ornith Q5 on `:8082`, proxy on `:8097`
-- **`ccqwen`**: Qwen3.6-27B MTP on `:8080`, proxy on `:8098`
-- Only one model fits in VRAM — switching kills the other server automatically
-- Supports tool calls and web search/fetch (auto-intercepted by fcc)
-- Uses dummy `fcc-no-auth` key (proxy ignores it)
-- Known limitation: ~30s TTFT from Ornith reasoning, Qwen loads ~50s first time (OS cache makes subsequent loads faster)
-
-### `code` — OpenCode via OpenRouter
-
-Quick model selector. Tab completions available.
-
-| Shortcut | Model |
-|---|---|
-| `ds`, `dsf`, `ds-flash`, `deepseek-v4-flash` | DeepSeek V4 Flash (OpenRouter) |
-| `dsp`, `ds-pro`, `deepseek-v4-pro` | DeepSeek V4 Pro (OpenRouter) |
-| `glm`, `glm5` | GLM 5.2 (OpenRouter) |
-| `qwen`, `qwen3.6` | Qwen 3.6 27B (OpenRouter) |
-| `qwen-flash`, `qwf` | Qwen 3.6 Flash (OpenRouter) |
-| `qwen-coder`, `qwc` | Qwen 3 Coder Plus (OpenRouter) |
-| `ornith` | Ornith-1.0-9B Q5_K_M (local) |
-| `local` | Qwen3.6-27B MTP (local) |
-| *(any other)* | passed as `openrouter/<name>` |
-
-### `yt-transcript`
-
-Fetches YouTube video data — metadata, transcript, thumbnails, screenshots. No API keys needed.
-
-```bash
-yt-transcript <url>                 # metadata + transcript with timestamps
-yt-transcript <url> --meta          # title, channel, date, full description
-yt-transcript <url> --text          # plain transcript only
-yt-transcript <url> --json          # full JSON output
-yt-transcript <url> --thumb         # download 5 thumbnail sizes (free CDN)
-yt-transcript <url> --screenshots N # capture N evenly-spaced video frames
-yt-transcript <url> --out /path     # output directory for images
-```
-
-Available as a skill in both Claude Code (`~/.claude/skills/yt-video-data/SKILL.md`) and OpenCode (`.opencode/skills/yt-video-data/SKILL.md`).
-
-## Proxies
-
-### OpenRouter Proxy (`~/.claude/or-proxy.mjs`)
-
-Strips `[1m]` suffixes from Claude Code's internal model names and maps them to OpenRouter paths.
-
-- Port: `8099`
-- Reads `OPENROUTER_API_KEY` from `.env` in priority order: proxy dir → parent → CWD
-- Passes through streaming responses unchanged
-- Only translates model name in request body; response passes through
-
-### Local Proxy — free-claude-code (`fcc-server`)
-
-[free-claude-code](https://github.com/Alishahryar1/free-claude-code) is a full Anthropic Messages API → OpenAI Chat Completions proxy.
-
-- **Ornith proxy**: Port `:8097`, backend `localhost:8082/v1`
-- **Qwen proxy**: Port `:8098`, backend `localhost:8080/v1`
-- Installed via `uv tool install` with Python 3.14.4 (asdf)
-- Client: `fcc-claude` — wraps Claude Code CLI, passes `--model` for correct display
-
-## Benchmarks
-
-All benchmarks run via `benchmarks/coding_benchmark.py` — 11 tasks across code generation, debugging, refactoring, testing, security, and optimization. Non-streaming, `max_tokens=4096`, `temp=0.6`.
-
-### Results (RTX 5080, CUDA 12.8)
-
-| Quant | Prompt t/s | Gen t/s | TTFT | Size | Bug-finding Quality |
-|---|---|---|---|---|---|
-| **Q5_K_M** | **1,585** | **117** | **29s** | **6.1 GB** | **Found all bugs ✓** |
-| Q4_K_M* | 725 | 123 | 23s | 5.3 GB | Missed bugs ✗ |
-| Q6_K | 970 | 48 | 57s | 7.2 GB | Good, but 2.4x slower |
-| NVFP4-MTP | 751 | 76 | 49s | 5.1 GB | 3/11 tasks empty output ✗ |
-
-*\*Q4_K_M run on CUDA 13.3 (broken MMQ on Blackwell, cuBLAS fallback ~5x slower prompt)*
-
-### Verdict: Q5_K_M is the sweet spot
-
-- Best quality-to-speed ratio
-- Most reliable bug finding (found all bugs in merge_intervals + thread-safety + security)
-- Zero empty outputs (Q4 sometimes, NVFP4 often produced empty content)
-- Fits easily in 16 GB VRAM with 131K context + KV cache quant
-
-### Why not other quants
-
-| Quant | Issue |
-|---|---|
-| Q4_K_M | Lower quality, missed subtle bugs (reference mutation, empty guard) |
-| Q6_K | Gen speed cratered to 48 t/s — 6-bit format has inefficient GPU kernels on NVIDIA |
-| NVFP4-MTP | Unoptimized llama.cpp kernels + MTP overhead = slower AND worse quality |
-| Q8_0 | Would be ~9.7 GB — doesn't fit with 131K context in 16 GB VRAM |
 
 ## Hardware
 
 | Component | Spec |
-|---|---|
-| GPU | NVIDIA GeForce RTX 5080 16 GB VRAM (Blackwell SM 12.0) |
+|-----------|------|
+| GPU | NVIDIA GeForce RTX 5080 (16 GB VRAM, Blackwell SM 12.0) |
 | CPU | AMD Ryzen 7 9800X3D |
-| RAM | 32 GB Windows / 15 GB WSL allocation |
+| RAM | 32 GB (15 GB WSL2 allocation) |
 | OS | WSL2 — Ubuntu 24.04 LTS |
-| CUDA | 12.8.61 (for builds) + 13.3 (system, for other tools) |
+| CUDA | 12.8.61 (llama.cpp builds) + 13.3 (system driver) |
 
-## CUDA Build Notes
+## CUDA Build
 
-### The Blackwell MMQ Bug
+### Blackwell MMQ Bug
 
-CUDA 13.1+ has a known MMQ kernel codegen bug on Blackwell sm_120 — `mul_mat_q` int8 MMA write-back epilogue produces out-of-range shared-memory stores. This causes intermittent crashes and silent fallback to cuBLAS (5-6x slower prompt).
-
-**Fix:** Install CUDA 12.8 alongside 13.3 and rebuild llama.cpp with it.
-
-### Build Commands
+CUDA 13.1+ has a known MMQ kernel bug on sm_120 — `mul_mat_q` produces out-of-range shared-memory stores, causing crashes and silent cuBLAS fallback (5-6x slower prompt). **Fix:** build with CUDA 12.8.
 
 ```bash
 export PATH=$HOME/.local/cuda-12.8/bin:$PATH
 export LD_LIBRARY_PATH=$HOME/.local/cuda-12.8/lib64:$LD_LIBRARY_PATH
 
-cd ~/llama.cpp && rm -rf build
 cmake -B build \
-  -DGGML_CUDA=ON \
-  -DGGML_FLASH_ATTN=ON \
+  -DGGML_CUDA=ON -DGGML_FLASH_ATTN=ON \
   -DGGML_CUDA_FORCE_CUBLAS=OFF \
   -DCMAKE_CUDA_ARCHITECTURES="120" \
   -DCUDAToolkit_ROOT=$HOME/.local/cuda-12.8
 cmake --build build --config Release -j $(nproc)
 ```
 
-## Environment Variables
-
-Required in `~/Development/local-llms/.env`:
-
-```bash
-OPENROUTER_API_KEY=sk-or-...     # Required for claude-or, code (OpenRouter models)
-DEEPSEEK_API_KEY=sk-...           # Optional — direct DeepSeek API
-HF_TOKEN=hf_...                   # Required for gated models (Gemma)
-```
-
 ## Models
 
-| Model | Size | Quant | Location |
-|---|---|---|---|
-| Ornith-1.0-9B | 9B | Q5_K_M (6.1 GB) | `~/models/ornith-1.0-9b/ornith-1.0-9b-Q5_K_M.gguf` |
-| Ornith-1.0-9B | 9B | Q4_K_M (5.3 GB) | `~/models/ornith-1.0-9b/ornith-1.0-9b-Q4_K_M.gguf` |
-| Qwen3.6-27B MTP | 27B | Q3_K_S (12 GB) | `~/models/qwen3.6-27b-mtp-Q3_K_S.gguf` |
-| Qwen3.5-27B | 27B | Q4_K_M (17 GB) | `~/models/qwen3.5-27b/Qwen_Qwen3.5-27B-Q4_K_M.gguf` |
-| Gemma 4 E4B | 4B | Q4_K_M (3 GB) | `~/models/gemma4-4b/gemma-4-E4B-it-Q4_K_M.gguf` |
-| Gemma 4 31B QAT | 31B | Q4_0 (17 GB) | Windows LM Studio (too large for 16 GB VRAM) |
+| Model | Params | Quant | Size | Notes |
+|-------|--------|-------|------|-------|
+| Ornith-1.0-9B | 9B | **Q5_K_M** | 6.1 GB | Primary coding agent |
+| Ornith-1.0-9B | 9B | Q4_K_M | 5.3 GB | Fallback, lower quality |
+| Qwen3.6-27B MTP | 27B | Q3_K_S | 12 GB | MTP speculative decoding (~2x speed) |
+| Qwen3.5-27B | 27B | Q4_K_M | 17 GB | Only fits with partial offload |
+| Gemma 4 E4B | 4B | Q4_K_M | 3 GB | Fast, CPU-friendly |
 
-## Ornith Knowledge
+## Server Commands
 
-Key findings from [How to Run Ornith 1.0 Locally](https://codersera.com/blog/how-to-run-ornith-1-0-locally-2026/):
+### Ornith 9B Q5_K_M (port 8082) — primary agent
 
-### Model Architecture
-- Ornith is **post-trained on Qwen 3.5** (9B, 35B MoE, 397B). The 31B variant (Gemma 4-based) has no public checkpoint yet.
-- It uses Qwen-style tool calling (`qwen3_xml` format) and emits `<think>` reasoning blocks.
-- Under vLLM, you need `--tool-call-parser qwen3_xml --reasoning-parser qwen3`. Under llama.cpp, `--reasoning-preserve` is the equivalent.
+```bash
+llama-server \
+  -m ~/models/ornith-1.0-9b/ornith-1.0-9b-Q5_K_M.gguf \
+  -ngl 99 -t 6 -c 200000 --port 8082 --host 127.0.0.1 \
+  --temp 0.6 --top-p 0.95 --top-k 20 \
+  -ub 4096 -b 4096 --cache-reuse 256 \
+  --flash-attn on --reasoning-preserve \
+  --cache-type-k q8_0 --cache-type-v q8_0 \
+  -np 6 --kv-unified
+```
 
-### Self-Scaffolding
-Ornith's key innovation: during RL training, the model jointly produces solution rollouts *and* the task-specific scaffolds that guide them. The model is optimized not just to answer well but to author the orchestration that elicits the answer. Three defenses against reward hacking: fixed outer trust boundary, deterministic monitor, and frozen LLM judge.
+### Qwen3.6-27B MTP (port 8080) — speculative decoding
 
-### Token Budget
-**Always set max_tokens ≥ 4096.** A code-generation prompt capped at 2048 output tokens can spend the entire budget inside the reasoning block and never reach the code. Our benchmarks confirm this — 3/11 tasks produced empty output at 4096 with NVFP4, and Ornith consistently burns ~1000+ tokens on `<think>` before answering.
+```bash
+llama-server \
+  -m ~/models/qwen3.6-27b-mtp-Q3_K_S.gguf \
+  -ngl 99 -t 8 -c 200000 --port 8080 --host 127.0.0.1 \
+  --spec-type draft-mtp --spec-draft-n-max 2 \
+  --flash-attn on --no-kv-offload \
+  --cache-type-k q4_0 --cache-type-v q4_0 \
+  -np 1
+```
 
-### Context Window
-256K theoretical, but **lower context is faster and more memory-stable.** We use 32K as the default — sufficient for agent workloads, avoids OOM on 16 GB VRAM with KV cache quant.
+## Benchmarks
 
-### Agent Compatibility
-Officially tested: Claude Code, OpenHands, OpenClaw, Hermes Agent, opencode. Any tool accepting an OpenAI-compatible base URL can use it.
+11-task coding benchmark (generation, debugging, refactoring, testing, security). Non-streaming, `max_tokens=4096`, `temp=0.6`.
 
-### Benchmark Reality
-| Model | Terminal-Bench | SWE-Bench Verified | Notes |
-|---|---|---|---|
-| Ornith 397B | 77.5 | 82.4 | Edges Opus 4.7, trails Opus 4.8 |
-| **Ornith 35B MoE** | **64.2** | **75.6** | **Best local variant, beats Qwen 3.5-397B** |
-| Ornith 9B | 43.1 | 69.4 | Respectable triage model |
-| Qwen 3.6-35B | 52.5 | 73.4 | Reference baseline |
+### Quantization Comparison (RTX 5080, CUDA 12.8)
 
-The 35B MoE is the standout — but needs ~25 GB (Q5_K_M), not viable on 16 GB RTX 5080. The 9B Q5_K_M is the right choice for our GPU.
+| Quant | Prompt t/s | Gen t/s | TTFT | Bug-finding |
+|-------|-----------|---------|------|-------------|
+| **Q5_K_M** | **1,585** | **117** | **29s** | **Found all** |
+| Q4_K_M | 725 | 123 | 23s | Missed bugs |
+| Q6_K | 970 | 48 | 57s | Good, 2.4x slower |
+| NVFP4-MTP | 751 | 76 | 49s | 3/11 tasks empty |
+
+### llama-bench (fully GPU-resident, flash-attn on)
+
+| Model | Threads | pp512 t/s | tg128 t/s |
+|-------|---------|-----------|-----------|
+| Ornith 9B Q5_K_M | 6 | 6,044 | 131.4 |
+| Qwen 27B Q3_K_S | 8 | 1,692 | 47.4 |
+| Qwen 27B Q3_K_S + MTP | 8 | — | ~96 |
+
+### Fable 5 Optimizations (patched build)
+
+| Scenario | Vanilla | Patched | Gain |
+|----------|---------|---------|------|
+| All-CPU prompt | 751 t/s | 1,771 t/s | +135% |
+| Partial offload prompt | 2,077 t/s | 3,257 t/s | +57% |
+| Fully GPU-resident | 5,935 t/s | 5,812 t/s | -2% |
+
+## Agent Wiring
+
+Shell aliases in `~/.zshrc.d/providers.zsh`. API keys in `.env`.
+
+### Claude Code
+
+| Alias | Backend | Model |
+|-------|---------|-------|
+| `claude-or` | OpenRouter proxy (:8099) | Claude Opus 4.8 / Sonnet 5 / Haiku 4.5 |
+| `ccornith` | free-claude-code (:8097) → llama-server (:8082) | Ornith 9B Q5_K_M |
+| `ccqwen` | free-claude-code (:8098) → llama-server (:8080) | Qwen 3.6 27B MTP |
+
+### OpenCode
+
+```bash
+code ds         # DeepSeek V4 Flash
+code glm        # GLM 5.2
+code qwen       # Qwen 3.6 27B
+code ornith     # Ornith Q5 (local)
+code local      # Qwen 27B MTP (local)
+```
+
+## Ornith 1.0 Notes
+
+- **Architecture:** Post-trained on Qwen 3.5. Self-scaffolding RL — model authors its own task-specific scaffolds during training.
+- **Reasoning overhead:** ~1000+ tokens in `<think>` before visible output. Always set `max_tokens >= 4096`.
+- **Tool calling:** Qwen XML format. Under llama.cpp use `--reasoning-preserve`.
+- **Context:** 256K theoretical. 131K works on 16 GB with KV cache quant.
+
+## Environment Variables
+
+```bash
+OPENROUTER_API_KEY=sk-or-...     # OpenRouter (claude-or, code)
+DEEPSEEK_API_KEY=sk-...          # Optional — direct DeepSeek
+HF_TOKEN=hf_...                  # Gated HuggingFace models (Gemma)
+```
+
+## Known Issues
+
+- **One model at a time in VRAM** — Qwen 27B (12 GB) + Ornith 9B (6 GB) = 18 GB > 16 GB. `ccornith`/`ccqwen` auto-kill the other.
+- **Ornith TTFT ~29s** — reasoning block overhead, normal for the model class.
+- **Fable5 patched build needs `GGML_CUDA_REGISTER_HOST=1`** or decode collapses to <2 t/s.
+- **Qwen 200K context needs `--no-kv-offload`** — KV cache ~10 GB at max context.

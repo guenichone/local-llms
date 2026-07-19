@@ -290,7 +290,7 @@ llama-server \
   --spec-type draft-mtp --spec-draft-n-max 2 \
   --flash-attn on \
   --cache-type-k q4_0 --cache-type-v q4_0 \
-  -np 2 --cache-reuse 256
+  -np 1
 ```
 
 ### CLI Commands (llama-cli)
@@ -454,4 +454,150 @@ All on CUDA 12.8 with flash-attn, KV cache q4_0:
 - **Only one model fits in VRAM** — Qwen 27B (12 GB) + Ornith 9B (6 GB) = 18 GB > 16 GB. `ccornith`/`ccqwen` auto-kill the other server on switch.
 - **Qwen 27B with 200K context requires `--no-kv-offload`** — KV cache (~10 GB at 200K) must stay in system RAM (DDR5 7200 bandwidth is sufficient). Without it, max usable context is ~65K on 16 GB VRAM.
 - **FCC proxy model display** — Remove `"model"` from `~/.claude/settings.json` to let each alias report its own model name via `--model` flag.
-- **Qwen server crash: "cache size limit reached"** — With `--no-kv-offload` and heavy Claude Code usage, the prompt cache fills up and the eviction logic races with new task launches, crashing the server (`operator(): cleaning up before exit...`). Fix: add `--cache-reuse 256` (enables KV cache prefix reuse across agent requests) and `-np 2` (reduces slots from 4 to 2, cutting cache pressure). Also confirmed: CUDA 13.3 driver + CUDA 12.8 user-mode libs is the optimal Blackwell config — the 13.3 kernel-mode driver is fully backward compatible with 12.8-compiled binaries; only CUDA 13.3 *libs* trigger the sm_120 MMQ bugs.
+- **Qwen server crash: "cache size limit reached"** — With `--no-kv-offload` and heavy Claude Code usage, the prompt cache fills up and the eviction logic races with new task launches, crashing the server. Fix: `-np 1` (single slot avoids cache pressure from concurrent requests). Also `--cache-reuse 256` is disabled with MTP speculative decoding.
+- **Qwopus server memory fitter hang** — The MTP variant GGUF hangs during `fitting params to device memory`. Fix: `-fit off` in the server command.
+- **TQ4_1S weight quantization is slower on Blackwell** — 26% slower generation than Q5_K_M on sm_120. The dp4a CUDA kernel cannot compete with Blackwell fp16 tensor cores. No flash-attn support.
+- **MoE partial offload kills performance** — Ornith 35B: ngl=99 → 146 t/s, ngl=35 → 13 t/s, ngl=30 → 6 t/s. Must fit all MoE layers on GPU.
+- **Flash-attn + sliding window** — Gemma 4 uses hybrid sliding window attention. Flash-attn works but hurts prompt processing (-12%) while helping generation (+22%). llama-bench has a multi-size benchmark bug with FA on sliding window models.
+- **Zsh `status` variable is read-only** — Do not use as a local variable name in functions.
+
+## TurboQuant Fork
+
+Fork of llama.cpp by TheTom adding Walsh-Hadamard-rotated KV cache compression and weight quantization types. We use the `feature/turboquant-kv-cache` branch.
+
+### KV Cache Types
+
+| Type | Bits | Compression vs f16 | Use case |
+|---|---|---|---|
+| `turbo4` | ~4.5 | ~3.5× | conservative V compression |
+| `turbo3` | ~3.5 | ~4.6× | **recommended default for V** |
+| `turbo2` | ~2.0 | ~8× | aggressive, auto-enables Boundary V protection |
+
+Asymmetric K/V is critical: **keep K at q8_0, compress only V**. Compressing K causes PPL blow-up on many model families.
+
+### KV Cache Savings at Our Context Sizes (turbo3 vs q8_0)
+
+| Model | ctx 131K | ctx 200K |
+|---|---|---|
+| Ornith 9B | save 1.4 GB | save 2.1 GB |
+| Qwen 27B | save 1.8 GB | save 2.8 GB |
+
+### Weight Types (not recommended on Blackwell)
+
+| Type | Notes |
+|---|---|
+| `TQ4_1S` | ~5.0 bpw, dp4a kernel — 26% slower than Q5_K_M on sm_120 |
+| `TQ3_1S` | ~4.0 bpw — not tested |
+
+### Build
+
+```bash
+cd ~/llama-cpp-turboquant && git checkout feature/turboquant-kv-cache
+export PATH=$HOME/.local/cuda-12.8/bin:$PATH
+cmake -B build-turbo -DGGML_CUDA=ON -DGGML_FLASH_ATTN=ON \
+  -DCMAKE_CUDA_ARCHITECTURES="120" -DCUDAToolkit_ROOT=$HOME/.local/cuda-12.8 \
+  -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath,$HOME/.local/cuda-12.8/lib64" \
+  -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath,$HOME/.local/cuda-12.8/lib64"
+cmake --build build-turbo --config Release -j $(nproc)
+```
+
+## APEX Quantization (MoE Models)
+
+MoE-aware mixed-precision quantization by the LocalAI team. Per-layer precision gradient + tensor classification. Runs on **stock** llama.cpp — no custom build needed.
+
+### Tiers for Qwen3.6/Qwopus 35B-A3B (our size: ~35B params, 3B active)
+
+| Tier | ~Size | Expert quant (middle) | Notes |
+|---|---|---|---|
+| Quality | 23 GB | IQ4_XS | best perplexity |
+| Balanced | 25 GB | Q5_K | general purpose |
+| Compact | 17 GB | Q3_K | consumer 24 GB |
+| Mini | 14 GB | IQ2_S | needs 24 GB or partial offload |
+| **Nano** | **11 GB** | **IQ2_XXS** | **fits 16 GB at ngl=99** |
+
+Pre-quantized GGUFs: `https://huggingface.co/mudler` (APEX Quants collection)
+
+**Available for:** Qwen3.6-35B, Qwopus3.6-35B, Ornith-1.0-35B, Gemma-4-26B, Claude Opus distilled variants, and many more.
+
+## Qwopus 35B MoE — Our Setup
+
+Qwopus = Qwen3.6-35B-A3B fine-tuned on Opus reasoning traces (Jackrong). Published independent benchmark: 88.6 Overall, 94.2 Quality, 91.7% Reliability. No SWE-bench scores yet (testing underway).
+
+### Server Config (ccqwopus)
+
+```bash
+# Model: Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Nano.gguf (10.9 GiB loaded)
+# Build: ~/llama-cpp-turboquant/build-turbo/bin/llama-server
+# Port: 8083, FCC proxy: 8100
+
+-m ~/models/qwopus/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Nano.gguf \
+-ngl 99 -t 8 -c 131072 --port 8083 --host 127.0.0.1 \
+--temp 0.6 --top-p 0.95 --top-k 20 \
+-ub 4096 -b 4096 --cache-reuse 256 \
+--flash-attn on \
+-ctk q8_0 -ctv turbo3 \
+--reasoning-budget 2048 --reasoning-preserve \
+-np 2 -fit off
+```
+
+Key: `-fit off` required to bypass memory fitter hang on MTP model variant. `--reasoning-budget 2048` prevents thinking from consuming entire token budget.
+
+MTP speculative decoding costs 1.6 GB VRAM — cannot use with 131K ctx on 16 GB. Bench showed 165 t/s without MTP anyway.
+
+## Complete Benchmarks — RTX 5080 16 GB (Jul 2026)
+
+All benches: turboquant build, turbo3 KV unless noted. FA = flash-attn.
+
+| Model | Size | pp8192 | tg128 | FA | ctx max | SWE-bench | Term-Bench |
+|---|---|---|---|---|---|---|---|
+| Ornith 9B Q5_K_M | 6.0 GB | 6193 | 122.8 | ✓ | 200K | 69.4% | 43.1% |
+| Ornith 9B TQ4_1S | 5.4 GB | 6597 | 92.1 | ✗ | 200K | 69.4% | 43.1% |
+| Ornith 35B Mini ngl=99 | 12.5 GB | 4960 | 146.5 | ✓ | ~60K | 75.6% ★ | 64.2% ★ |
+| Ornith 35B Mini ngl=35 | 12.5 GB | 2683 | 13.1 | ✓ | ~140K | 75.6% | 64.2% |
+| **Qwopus Nano ngl=99** | **10.9 GB** | **6135** | **164.6** | ✓ | **131K** | **~75%** | **~60%** |
+| Qwopus Mini ngl=30 | 12.5 GB | 2908 | 31.3 | ✓ | ~145K | ~75% | ~60% |
+| Gemma 4 26B Nano FA off | 8.8 GB | 7797 | 138.6 | ✗ | 200K | — | — |
+| Gemma 4 26B Nano FA on | 8.8 GB | 6842 | 168.7 | ✓ | 200K | — | — |
+| Qwen3.6 35B Mini ngl=30 | 13.3 GB | 2707 | 16.7 | ✓ | ~130K | 73.4% | 52.5% |
+| Qwen3.6 27B MTP Q3 | 12.0 GB | ~1700 | ~47 | ✓ | 200K | ~68% | ~48% |
+
+### Winners
+
+| Use case | Model | Why |
+|---|---|---|
+| **Daily driver** | Ornith 9B Q5 | 123 t/s, 200K, 69.4% SWE, flash-attn |
+| **Quality all-round** | Qwopus 35B Nano | 165 t/s, 131K, ~75% SWE, Opus reasoning |
+| **Dark horse** | Gemma 4 26B Nano | 8.8 GB, 200K, 7797 pp, no SWE scores yet |
+| **Best quality** | Ornith 35B Mini | 75.6% SWE but only 60K ctx — agent-starved |
+| **Dead** | TQ4_1S, Qwen 27B, any partial-offload MoE | |
+
+## New Shell Commands
+
+```
+cc               # interactive local model picker (ornith / qwen / qwopus)
+ccqwopus         # Claude Code with Qwopus 35B Nano (auto-starts server + proxy)
+ccstop           # kills all FCC proxies + llama servers
+
+code qwopus      # OpenCode with Qwopus
+```
+
+## Qwopus Server Manual Start
+
+```bash
+export LD_LIBRARY_PATH=$HOME/.local/cuda-12.8/lib64:$LD_LIBRARY_PATH
+~/llama-cpp-turboquant/build-turbo/bin/llama-server \
+  -m ~/models/qwopus/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Nano.gguf \
+  -ngl 99 -t 8 -c 131072 --port 8083 --host 127.0.0.1 \
+  --temp 0.6 --top-p 0.95 --top-k 20 \
+  -ub 4096 -b 4096 --cache-reuse 256 \
+  --flash-attn on \
+  -ctk q8_0 -ctv turbo3 \
+  --reasoning-budget 2048 --reasoning-preserve \
+  -np 2 -fit off
+
+# FCC proxy
+PORT=8100 LLAMACPP_BASE_URL="http://127.0.0.1:8083/v1" \
+  MODEL="llamacpp/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Nano.gguf" \
+  ENABLE_WEB_SERVER_TOOLS=true FCC_AUTO_INTERCEPT_WEB_TOOLS=true \
+  fcc-server > /tmp/fcc-qwopus.log 2>&1 & disown
+```
