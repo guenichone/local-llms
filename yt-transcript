@@ -1,51 +1,238 @@
 #!/usr/bin/env python3
-"""Fetch a YouTube video transcript from the CLI.
+"""Fetch YouTube video transcript + metadata + screenshots. No API key required.
 
 Usage:
   yt-transcript <video-id-or-url>
+  yt-transcript <video-id-or-url> --text         (plain transcript, no timestamps)
+  yt-transcript <video-id-or-url> --json         (full metadata + transcript as JSON)
+  yt-transcript <video-id-or-url> --meta         (metadata only, no transcript)
+  yt-transcript <video-id-or-url> --thumb        (download thumbnail images)
+  yt-transcript <video-id-or-url> --screenshots 3  (capture 3 evenly-spaced frames)
+  yt-transcript <video-id-or-url> --screenshots 3 --thumb  (both)
   yt-transcript <video-id-or-url> --lang es
-  yt-transcript <video-id-or-url> --text  (plain text, no timestamps)
+  yt-transcript <video-id-or-url> --out /tmp/vid  (output directory/prefix)
 """
 
-import sys
-import re
-import argparse
+import sys, re, json, argparse, subprocess, os, textwrap, urllib.request, shutil
+from pathlib import Path
 
-from youtube_transcript_api._api import YouTubeTranscriptApi
+try:
+    from youtube_transcript_api._api import YouTubeTranscriptApi
+except ImportError:
+    YouTubeTranscriptApi = None
+
+VID_ID_RE = re.compile(r"(?:v=|/v/|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})")
+ID_ONLY_RE = re.compile(r"^([A-Za-z0-9_-]{11})$")
+
+THUMB_SIZES = ["maxresdefault", "sddefault", "hqdefault", "mqdefault", "default"]
+THUMB_BASE = "https://i.ytimg.com/vi/{vid}/{size}.jpg"
 
 
 def extract_video_id(url_or_id: str) -> str:
-    patterns = [
-        r"(?:v=|/v/|youtu\.be/)([A-Za-z0-9_-]{11})",
-        r"^([A-Za-z0-9_-]{11})$",
-    ]
-    for p in patterns:
-        m = re.search(p, url_or_id)
+    for p in (VID_ID_RE, ID_ONLY_RE):
+        m = p.search(url_or_id)
         if m:
             return m.group(1)
     sys.exit(f"error: could not parse video ID from '{url_or_id}'")
 
 
+def fetch_metadata(vid: str) -> dict:
+    try:
+        raw = subprocess.check_output(
+            ["yt-dlp", "--dump-json", "--", f"https://youtube.com/watch?v={vid}"],
+            stderr=subprocess.DEVNULL, timeout=30, text=True,
+        )
+        info = json.loads(raw)
+        return {
+            "id": vid,
+            "url": f"https://youtube.com/watch?v={vid}",
+            "title": info.get("title", ""),
+            "channel": info.get("channel", info.get("uploader", "")),
+            "channel_url": info.get("channel_url", ""),
+            "upload_date": info.get("upload_date", ""),
+            "duration_sec": info.get("duration", 0),
+            "description": (info.get("description") or "").strip(),
+            "view_count": info.get("view_count", 0),
+            "like_count": info.get("like_count"),
+            "tags": info.get("tags") or [],
+            "categories": info.get("categories") or [],
+            "thumbnail": info.get("thumbnail", ""),
+            "webpage_url": info.get("webpage_url", f"https://youtube.com/watch?v={vid}"),
+        }
+    except FileNotFoundError:
+        sys.exit("error: yt-dlp not found. Install with: pip install yt-dlp")
+    except subprocess.TimeoutExpired:
+        sys.exit(f"error: timed out fetching metadata for {vid}")
+    except subprocess.CalledProcessError as e:
+        sys.exit(f"error: yt-dlp failed: {e.stderr.strip() or e}")
+
+
+def fetch_transcript(vid: str, lang: str = "en") -> list[dict] | None:
+    if not YouTubeTranscriptApi:
+        return None
+    try:
+        api = YouTubeTranscriptApi()
+        snippets = api.fetch(vid, languages=[lang])
+        return [{"start": s.start, "duration": s.duration, "text": s.text} for s in snippets]
+    except Exception:
+        return None
+
+
+def download_thumbnails(vid: str, out_dir: str) -> list[str]:
+    saved = []
+    for size in THUMB_SIZES:
+        url = THUMB_BASE.format(vid=vid, size=size)
+        path = os.path.join(out_dir, f"{vid}-thumb-{size}.jpg")
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    with open(path, "wb") as f:
+                        shutil.copyfileobj(resp, f)
+                    fsize = os.path.getsize(path)
+                    if fsize < 1000:
+                        os.remove(path)
+                        continue
+                    saved.append(path)
+        except Exception:
+            continue
+    return saved
+
+
+def capture_screenshots(vid: str, count: int, duration_sec: int, out_dir: str) -> list[dict]:
+    if count < 1:
+        return []
+    if duration_sec < 1:
+        sys.exit("error: need duration to compute screenshot timestamps")
+
+    saved = []
+    interval = duration_sec / (count + 1)
+    for i in range(1, count + 1):
+        t = int(interval * i)
+        path = os.path.join(out_dir, f"{vid}-frame-{i:02d}_{t}s.jpg")
+        tmp_vid = os.path.join(out_dir, f".{vid}-tmp-{i:02d}.mp4")
+        m, s = divmod(t, 60)
+        label = f"{m}:{s:02d}"
+        try:
+            subprocess.run([
+                "yt-dlp", "-f", "best[height<=720]", "--no-playlist",
+                "--download-sections", f"*{t}-{t+3}",
+                "--force-keyframes-at-cuts",
+                "-o", tmp_vid,
+                f"https://youtube.com/watch?v={vid}",
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+               timeout=60, check=False)
+            if os.path.exists(tmp_vid) and os.path.getsize(tmp_vid) > 1000:
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", tmp_vid,
+                    "-vframes", "1", "-q:v", "2",
+                    "-update", "1", path,
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                   timeout=30, check=False)
+                if os.path.exists(path) and os.path.getsize(path) > 500:
+                    saved.append({"path": path, "timestamp_sec": t, "label": label})
+        except Exception:
+            continue
+        finally:
+            for p in [tmp_vid]:
+                if os.path.exists(p):
+                    os.remove(p)
+
+    return saved
+
+
+def format_duration(sec: int) -> str:
+    h, r = divmod(sec, 3600)
+    m, s = divmod(r, 60)
+    if h:
+        return f"{h}h{m:02d}m{s:02d}s"
+    return f"{m}m{s:02d}s"
+
+
+def text_output(meta: dict, transcript: list[dict] | None, show_timestamps: bool,
+                thumb_paths: list[str], screenshots: list[dict]) -> str:
+    lines = []
+    lines.append(f"# {meta['title']}")
+    lines.append(f"Channel: {meta['channel']}")
+    lines.append(f"URL:     {meta['url']}")
+    if meta.get("upload_date"):
+        d = meta["upload_date"]
+        lines.append(f"Date:    {d[:4]}-{d[4:6]}-{d[6:8]}")
+    if meta.get("duration_sec"):
+        lines.append(f"Length:  {format_duration(meta['duration_sec'])}")
+    if meta.get("view_count"):
+        lines.append(f"Views:   {meta['view_count']:,}")
+    if meta.get("description"):
+        lines.append(f"\nDescription ({len(meta['description'])} chars):")
+        lines.append(textwrap.indent(meta["description"], "  "))
+    if thumb_paths:
+        lines.append(f"\nThumbnails ({len(thumb_paths)}):")
+        for t in thumb_paths:
+            lines.append(f"  {t}")
+    if screenshots:
+        lines.append(f"\nScreenshots ({len(screenshots)}):")
+        for s in screenshots:
+            lines.append(f"  [{s['label']}] {s['path']}")
+    if transcript:
+        lines.append(f"\nTranscript ({len(transcript)} segments):\n")
+        for s in transcript:
+            prefix = f"[{s['start']:.1f}s] " if show_timestamps else ""
+            lines.append(f"{prefix}{s['text']}")
+    elif transcript is None:
+        lines.append("\n[No transcript available]")
+    return "\n".join(lines)
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Fetch a YouTube transcript")
+    parser = argparse.ArgumentParser(description="Fetch YouTube video transcript + metadata + screenshots")
     parser.add_argument("video", help="YouTube video ID or URL")
     parser.add_argument("--lang", default="en", help="Language code (default: en)")
     parser.add_argument("--text", action="store_true", help="Plain text only, no timestamps")
+    parser.add_argument("--json", action="store_true", help="Output JSON with metadata + transcript")
+    parser.add_argument("--meta", action="store_true", help="Metadata only, no transcript")
+    parser.add_argument("--thumb", action="store_true", help="Download thumbnail images (free, instant)")
+    parser.add_argument("--screenshots", type=int, default=0, metavar="N",
+                        help="Capture N evenly-spaced frames (requires video download)")
+    parser.add_argument("--out", default=".", metavar="DIR",
+                        help="Output directory for images (default: current dir)")
     args = parser.parse_args()
 
     vid = extract_video_id(args.video)
-    api = YouTubeTranscriptApi()
+    meta = fetch_metadata(vid)
 
-    try:
-        transcript = api.fetch(vid, languages=[args.lang])
-    except Exception as e:
-        sys.exit(f"error fetching transcript: {e}")
+    out_dir = args.out
+    os.makedirs(out_dir, exist_ok=True)
 
-    for snippet in transcript:
-        if args.text:
-            print(snippet.text)
-        else:
-            print(f"[{snippet.start:.1f}s] {snippet.text}")
+    thumb_paths = []
+    if args.thumb:
+        print(f"Downloading thumbnails...", file=sys.stderr)
+        thumb_paths = download_thumbnails(vid, out_dir)
+
+    screenshots = []
+    if args.screenshots > 0:
+        print(f"Capturing {args.screenshots} screenshots (downloading video segments)...", file=sys.stderr)
+        screenshots = capture_screenshots(vid, args.screenshots, meta["duration_sec"], out_dir)
+
+    transcript = None
+    if not args.meta:
+        transcript = fetch_transcript(vid, args.lang)
+
+    if args.json:
+        out = {
+            **meta,
+            "transcript": transcript or [],
+            "thumbnails_downloaded": thumb_paths,
+            "screenshots": screenshots,
+        }
+        json.dump(out, sys.stdout, indent=2, ensure_ascii=False)
+        print()
+    else:
+        print(text_output(meta, transcript, show_timestamps=not args.text,
+                         thumb_paths=thumb_paths, screenshots=screenshots))
+
+    if screenshots:
+        real_paths = [s["path"] if isinstance(s, dict) else s for s in screenshots]
+        print(f"\nDone. Thumbnails: {len(thumb_paths)}, Screenshots: {len(real_paths)}", file=sys.stderr)
 
 
 if __name__ == "__main__":

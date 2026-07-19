@@ -6,7 +6,8 @@
 # ── Claude Code ──
 claude-or                          # Opus 4.8 via OpenRouter ($)
 claude-or-sonnet                   # Sonnet 5 via OpenRouter
-claude-local                       # Ornith Q5 (local, free, ~30s delay)
+  ccornith                        # Ornith Q5 (local, free, ~30s delay)
+  ccqwen                           # Qwen3.6-27B MTP (local)
 
 # ── OpenCode ──
 code ds                            # DeepSeek V4 Flash
@@ -14,7 +15,8 @@ code ornith                        # Ornith Q5 (local llama.cpp)
 code local                         # Qwen3.6-27B MTP (local)
 
 # ── Ornith server ──
-claude-local                       # auto-starts server + proxy
+ccornith                           # auto-starts server + proxy
+ccqwen                             # auto-starts Qwen server + proxy
 llama-server ...                   # or manual: see Server Commands below
 
 # ── Utilities ──
@@ -51,7 +53,8 @@ Shell aliases defined in `~/.zshrc.d/providers.zsh` (sourced from `.zshrc`). API
 | Command | What | Proxy | Port | Key Source |
 |---|---|---|---|---|
 | `claude-or` | Claude Code → OpenRouter | `or-proxy.mjs` | 8099 | `OPENROUTER_API_KEY` |
-| `claude-local` | Claude Code → local Ornith | `fcc-claude` (free-claude-code) | 8097 | `fcc-no-auth` (dummy, ignored) |
+| `ccornith` | Claude Code → Ornith Q5 | `fcc-claude` (free-claude-code) | 8097 | `fcc-no-auth` (dummy, ignored) |
+| `ccqwen` | Claude Code → Qwen3.6-27B MTP | `fcc-claude` (free-claude-code) | 8098 | `fcc-no-auth` (dummy, ignored) |
 | `code` | OpenCode with model picker | none | — | `OPENROUTER_API_KEY` |
 
 ### `claude-or` — Claude Code via OpenRouter
@@ -65,9 +68,13 @@ Translates internal model names to OpenRouter format via proxy on `:8099`.
 | `claude-haiku-4-5` | `anthropic/claude-haiku-4.5` |
 | `claude-fable-5` | `anthropic/claude-fable-5` |
 
-### `claude-local` — Claude Code via Local Ornith
+### `ccornith` — Claude Code via Local Ornith
 
 Anthropic protocol proxy via free-claude-code (fcc). Auto-starts Ornith llama-server on `:8082` and fcc-server proxy on `:8097`. Uses `--reasoning-preserve` to capture `<think>` blocks. Supports tool calls (passed through to local model; Ornith may or may not handle them depending on complexity). Uses dummy `fcc-no-auth` key (proxy ignores it).
+
+### `ccqwen` — Claude Code via Local Qwen 3.6 27B MTP
+
+Same proxy approach as Ornith. Auto-starts Qwen llama-server on `:8080` and fcc-server proxy on `:8098`. MTP speculative decoding gives ~2x generation speed (~96 t/s vs ~48).
 
 ### `code` — OpenCode
 
@@ -252,7 +259,7 @@ Our subagent found and we fixed:
 export LD_LIBRARY_PATH=$HOME/.local/cuda-12.8/lib64:$LD_LIBRARY_PATH
 llama-server \
   -m ~/models/ornith-1.0-9b/ornith-1.0-9b-Q5_K_M.gguf \
-  -ngl 99 -t 8 -c 200000 --port 8082 --host 127.0.0.1 \
+  -ngl 99 -t 6 -c 200000 --port 8082 --host 127.0.0.1 \
   --temp 0.6 --top-p 0.95 --top-k 20 \
   -ub 4096 -b 4096 --cache-reuse 256 \
   --flash-attn on --reasoning-preserve \
@@ -263,9 +270,10 @@ llama-server \
 Flag details:
 | Flag | Effect |
 |---|---|
+| `-t 6` | Optimal thread count (benchmarked: t=6 > t=8 for Ornith) |
 | `-ub 4096 -b 4096` | Large batches for prompt processing |
 | `--cache-reuse 256` | KV cache prefix reuse (agent workloads) |
-| `--flash-attn on` | Flash Attention 1.2-1.5x speedup |
+| `--flash-attn on` | Flash Attention +15% pp, +5% tg on vanilla build |
 | `--reasoning-preserve` | Preserve `<think>` blocks as separate field (Qwen-style) |
 | `--cache-type-k/v q8_0` | KV cache quant → better precision (uses ~3.3 GB more VRAM vs q4_0) |
 | `-np 6 --kv-unified` | 6 parallel slots with unified KV cache |
@@ -278,8 +286,11 @@ Flag details:
 export LD_LIBRARY_PATH=$HOME/.local/cuda-12.8/lib64:$LD_LIBRARY_PATH
 llama-server \
   -m ~/models/qwen3.6-27b-mtp-Q3_K_S.gguf \
-  -ngl 99 --port 8080 \
-  --spec-type draft-mtp --spec-draft-n-max 2
+  -ngl 99 -t 8 -c 200000 --no-kv-offload --port 8080 --host 127.0.0.1 \
+  --spec-type draft-mtp --spec-draft-n-max 2 \
+  --flash-attn on \
+  --cache-type-k q4_0 --cache-type-v q4_0 \
+  -np 2 --cache-reuse 256
 ```
 
 ### CLI Commands (llama-cli)
@@ -327,11 +338,13 @@ opencode run --agent ornith-reviewer "Review"    # code review subagent
 ### Claude Code (Local)
 
 ```bash
-claude-local                          # interactive (auto-starts server + proxy)
-claude-local -p "write fibonacci" --print  # non-interactive
+ccornith                          # Ornith Q5 (interactive, auto-starts server + proxy)
+ccornith -p "write fibonacci" --print  # non-interactive
+ccqwen                            # Qwen3.6-27B MTP (interactive, auto-starts server + proxy)
+ccqwen -p "write fibonacci" --print    # non-interactive
 ```
 
-Anthropic protocol proxy via free-claude-code (fcc) on `:8097` converts Anthropic Messages API to OpenAI Chat Completions for llama.cpp. Tool calls are supported (passed through; Ornith may or may not handle them). Uses dummy `fcc-no-auth` key (proxy ignores it).
+Anthropic protocol proxy via free-claude-code (fcc) on `:8097` (Ornith) / `:8098` (Qwen) converts Anthropic Messages API to OpenAI Chat Completions for llama.cpp. Tool calls are supported (passed through; Ornith may or may not handle them). Uses dummy `fcc-no-auth` key (proxy ignores it).
 
 **Web Search:** Claude Code's built-in `WebSearch` requires Anthropic search backend (fails with dummy key); `Fetch` tool works fine. fcc auto-intercepts `web_search`/`web_fetch` server-side when `ENABLE_WEB_SERVER_TOOLS=true` + `FCC_AUTO_INTERCEPT_WEB_TOOLS=true` — search via DuckDuckGo, fetch via HTTP.
 
@@ -350,13 +363,41 @@ Ornith is [officially listed](https://codersera.com/blog/how-to-run-ornith-1-0-l
 
 ## Performance (RTX 5080)
 
+### llama-bench — July 2026 (CUDA 12.8, vanilla build, fully GPU-resident)
+
+| Model | Threads | Flash-Attn | pp512 t/s | tg128 t/s | Notes |
+|---|---|---|---|---|---|
+| **Ornith 9B Q5_K_M** | **6** | **on** | **6,044** | **131.4** | Best: vanilla build, t=6 optimal |
+| Ornith 9B Q5_K_M | 8 | on | 5,742 | 123.5 | tg drops at higher threads |
+| Ornith 9B Q5_K_M | 6 | off | 5,243 | 125.2 | FA gives +15% pp |
+| Qwen 27B Q3_K_S | 8 | on | 1,692 | 47.4 | Best pp at t=8 |
+| Qwen 27B Q3_K_S | 4 | on | 1,611 | 48.3 | Best tg at t=4 |
+| Qwen 27B Q3_K_S + MTP | 8 | on | — | **~96** | MTP ≈2x decode (llama-bench can't test) |
+
+### Patched build (fable5-optimizations)
+
+| Model | Threads | pp512 t/s | tg128 t/s | vs Vanilla |
+|---|---|---|---|---|
+| Ornith 9B Q5_K_M | 6 | 6,346 | 127.5 | pp +16%, tg same |
+| Qwen 27B Q3_K_S | 8 | 1,786 | 47.7 | pp +5.6%, tg same |
+
+**Critical:** Patched build requires `GGML_CUDA_REGISTER_HOST=1` or decode collapses to <2 t/s. Vanilla build + flash-attn is best for fully GPU-resident models (Ornith). Patched build better for partial offload.
+
+### Cache type impact (Ornith Q5, patched + RH)
+
+| Cache K/V | pp512 t/s | tg128 t/s |
+|---|---|---|
+| f16 (default) | 5,621 | 128.2 |
+| q8_0 | 5,453 | 126.3 |
+| q4_0 | 5,492 | 121.8 |
+
+### Older benchmarks (CUDA 12.8, 11-task)
+
 | Model | Prompt t/s | Gen t/s | Notes |
 |---|---|---|---|
 | Ornith-1.0-9B Q5_K_M | 1,585 | 117 | CUDA 12.8, flash-attn, 11-task benchmark |
 | Ornith-1.0-9B Q4_K_M | 254 | 120 | CLI mode w/ KV cache |
-| Ornith-1.0-9B Q4_K_M | 9.7 | 6.5 | Cold start (CLI) |
 | Gemma 4 E4B (4B) | 184 | 149 | All layers on GPU |
-| Qwen3.6-27B (no MTP) | 82 | 49 | Baseline |
 | Qwen3.6-27B (+ MTP) | 109 | 98 | ~2x gen speedup |
 | Gemma 4 31B QAT (31B, -ngl 30) | 16 | 3.2 | Partial offload, 17GB > 16GB |
 
@@ -409,3 +450,8 @@ All on CUDA 12.8 with flash-attn, KV cache q4_0:
 - **Gemma models need `HF_TOKEN`** env var (gated repos on HuggingFace)
 - **LLAMACPP_BASE_URL must include `/v1` suffix** — fcc's Anthropic transport appends `/messages` to base URL. `http://127.0.0.1:8082/v1` → `http://127.0.0.1:8082/v1/messages` ✓; `http://127.0.0.1:8082` → `http://127.0.0.1:8082/messages` ✗ (404). Kill old fcc-server process to pick up config changes.
 - **Session model path warning** — Claude Code warns `unknown session model` when session history `.jsonl` in `~/.claude/projects/` contains full GGUF paths. Fix: `sed -i 's|/home/barrak/models/ornith-1\.0-9b/ornith-1\.0-9b-Q5_K_M\.gguf|ornith-1.0-9b-Q5_K_M.gguf|g' ~/.claude/projects/*.jsonl`
+- **Fable5 patched build breaks without `GGML_CUDA_REGISTER_HOST=1`** — decode speed collapses from ~125 t/s to <2 t/s on fully GPU-resident models. Always export this env var when using the patched build.
+- **Only one model fits in VRAM** — Qwen 27B (12 GB) + Ornith 9B (6 GB) = 18 GB > 16 GB. `ccornith`/`ccqwen` auto-kill the other server on switch.
+- **Qwen 27B with 200K context requires `--no-kv-offload`** — KV cache (~10 GB at 200K) must stay in system RAM (DDR5 7200 bandwidth is sufficient). Without it, max usable context is ~65K on 16 GB VRAM.
+- **FCC proxy model display** — Remove `"model"` from `~/.claude/settings.json` to let each alias report its own model name via `--model` flag.
+- **Qwen server crash: "cache size limit reached"** — With `--no-kv-offload` and heavy Claude Code usage, the prompt cache fills up and the eviction logic races with new task launches, crashing the server (`operator(): cleaning up before exit...`). Fix: add `--cache-reuse 256` (enables KV cache prefix reuse across agent requests) and `-np 2` (reduces slots from 4 to 2, cutting cache pressure). Also confirmed: CUDA 13.3 driver + CUDA 12.8 user-mode libs is the optimal Blackwell config — the 13.3 kernel-mode driver is fully backward compatible with 12.8-compiled binaries; only CUDA 13.3 *libs* trigger the sm_120 MMQ bugs.

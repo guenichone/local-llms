@@ -39,71 +39,150 @@ claude-or-stop() {
   if [ -n "$pid" ]; then kill "$pid" 2>/dev/null; echo "OR proxy stopped"; fi
 }
 
-# ── Claude Code via Local Ornith (free-claude-code proxy) ──────────
-FCC_PORT="${FCC_PORT:-8097}"
+# ── Claude Code via Local Models (free-claude-code proxy) ──────────
+FCC_ORNITH_PORT="${FCC_ORNITH_PORT:-8097}"
+FCC_QWEN_PORT="${FCC_QWEN_PORT:-8098}"
 ORNITH_MODEL="$HOME/models/ornith-1.0-9b/ornith-1.0-9b-Q5_K_M.gguf"
+QWEN_MODEL="$HOME/models/qwen3.6-27b-mtp-Q3_K_S.gguf"
 
-claude-local() {
+# ── ccornith — Claude Code with Ornith-1.0-9B Q5 (local) ──────────
+# Benchmarks (RTX 5080, vanilla build): pp512=6044 t/s, tg128=131 t/s
+# Best: vanilla build, -t 6, flash-attn on
+ccornith() {
   _ensure_ornith_server
-  _ensure_fcc_proxy
-  PORT=$FCC_PORT fcc-claude "$@"
+  _ensure_ornith_fcc_proxy
+  PORT=$FCC_ORNITH_PORT fcc-claude --model "ornith-1.0-9b-Q5_K_M.gguf" "$@"
 }
 
-claude-local-stop() {
-  local pid
-  pid=$(lsof -ti :$FCC_PORT 2>/dev/null)
-  if [ -n "$pid" ]; then kill "$pid" 2>/dev/null; echo "FCC proxy stopped"; else echo "No proxy running"; fi
+# ── ccqwen — Claude Code with Qwen3.6-27B MTP (local) ─────────────
+# Benchmarks (RTX 5080, vanilla build): pp512=1692 t/s, tg128=47 t/s (+MTP ≈96)
+# Best: vanilla build, -t 8, MTP on, flash-attn on
+ccqwen() {
+  _ensure_qwen_server
+  _ensure_qwen_fcc_proxy
+  PORT=$FCC_QWEN_PORT fcc-claude --model "qwen3.6-27b-mtp-Q3_K_S.gguf" "$@"
 }
+
+# Legacy alias
+claude-local() { ccornith "$@"; }
+
+ccstop() {
+  local pid
+  pid=$(lsof -ti :$FCC_ORNITH_PORT 2>/dev/null)
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Ornith FCC proxy stopped"
+  pid=$(lsof -ti :$FCC_QWEN_PORT 2>/dev/null)
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Qwen FCC proxy stopped"
+}
+
+# ── Server helpers ─────────────────────────────────────────────────
 
 _ensure_ornith_server() {
-  if lsof -i :8082 >/dev/null 2>&1; then return 0; fi
+  if lsof -i :8082 >/dev/null 2>&1; then
+    curl -s http://127.0.0.1:8082/v1/models >/dev/null 2>&1 && return 0
+    echo "Ornith server running but not ready — waiting..." >&2
+    for i in $(seq 1 15); do
+      curl -s http://127.0.0.1:8082/v1/models >/dev/null 2>&1 && return 0
+      sleep 2
+    done
+    return 1
+  fi
+  # Only one model fits in VRAM — kill Qwen if running
+  if lsof -i :8080 >/dev/null 2>&1; then
+    echo "Stopping Qwen server to free VRAM..." >&2
+    kill $(lsof -ti :8080) 2>/dev/null
+    sleep 2
+  fi
   echo "Starting Ornith Q5 server on :8082..."
   export LD_LIBRARY_PATH="$HOME/.local/cuda-12.8/lib64:$LD_LIBRARY_PATH"
   nohup "$HOME/llama.cpp/build/bin/llama-server" \
     -m "$ORNITH_MODEL" \
-    -ngl 99 -t 8 -c 200000 --port 8082 --host 127.0.0.1 \
+    -ngl 99 -t 6 -c 200000 --port 8082 --host 127.0.0.1 \
     --temp 0.6 --top-p 0.95 --top-k 20 \
     -ub 4096 -b 4096 --cache-reuse 256 \
     --flash-attn on --reasoning-preserve \
     --cache-type-k q8_0 --cache-type-v q8_0 \
     -np 6 --kv-unified \
     > /tmp/ornith-server.log 2>&1 & disown
-  for i in $(seq 1 30); do
-    if curl -s http://127.0.0.1:8082/health >/dev/null 2>&1; then
-      echo "Ornith server ready (${i}s)"; break
+  for i in $(seq 1 25); do
+    if curl -s http://127.0.0.1:8082/v1/models >/dev/null 2>&1; then
+      echo "Ornith server ready (${i}s)"; return 0
     fi
-    sleep 1
+    sleep 2
   done
+  echo "Ornith server failed to start within 50s" >&2
+  return 1
 }
 
-_ensure_fcc_proxy() {
-  if lsof -i :$FCC_PORT >/dev/null 2>&1; then return 0; fi
-  echo "Starting free-claude-code proxy on :$FCC_PORT..."
-  PORT=$FCC_PORT LLAMACPP_BASE_URL="http://127.0.0.1:8082/v1" \
+_ensure_qwen_server() {
+  if lsof -i :8080 >/dev/null 2>&1; then
+    curl -s http://127.0.0.1:8080/v1/models >/dev/null 2>&1 && return 0
+    echo "Qwen server running but not ready — waiting..." >&2
+    for i in $(seq 1 30); do
+      curl -s http://127.0.0.1:8080/v1/models >/dev/null 2>&1 && return 0
+      sleep 2
+    done
+    echo "Qwen server still not ready after 60s" >&2
+    return 1
+  fi
+  # Only one model fits in VRAM — kill Ornith if running
+  if lsof -i :8082 >/dev/null 2>&1; then
+    echo "Stopping Ornith server to free VRAM..." >&2
+    kill $(lsof -ti :8082) 2>/dev/null
+    sleep 2
+  fi
+  echo "Starting Qwen3.6-27B MTP server on :8080..."
+  export LD_LIBRARY_PATH="$HOME/.local/cuda-12.8/lib64:$LD_LIBRARY_PATH"
+  nohup "$HOME/llama.cpp/build/bin/llama-server" \
+    -m "$QWEN_MODEL" \
+    -ngl 99 -t 8 -c 200000 --port 8080 --host 127.0.0.1 \
+    --no-kv-offload \
+    --temp 0.7 --top-p 0.95 --top-k 40 \
+    --spec-type draft-mtp --spec-draft-n-max 2 \
+    --flash-attn on \
+    --cache-type-k q4_0 --cache-type-v q4_0 \
+    -np 2 --cache-reuse 256 \
+    > /tmp/qwen-server.log 2>&1 & disown
+  for i in $(seq 1 45); do
+    if curl -s http://127.0.0.1:8080/v1/models >/dev/null 2>&1; then
+      echo "Qwen server ready (${i}s)"; return 0
+    fi
+    sleep 2
+  done
+  echo "Qwen server failed to start within 90s — check /tmp/qwen-server.log" >&2
+  return 1
+}
+
+# ── FCC proxy helpers ───────────────────────────────────────────────
+
+_ensure_ornith_fcc_proxy() {
+  if lsof -i :$FCC_ORNITH_PORT >/dev/null 2>&1; then return 0; fi
+  echo "Starting FCC proxy for Ornith on :$FCC_ORNITH_PORT..."
+  PORT=$FCC_ORNITH_PORT LLAMACPP_BASE_URL="http://127.0.0.1:8082/v1" \
     MODEL="llamacpp/ornith-1.0-9b-Q5_K_M.gguf" \
     ENABLE_WEB_SERVER_TOOLS=true FCC_AUTO_INTERCEPT_WEB_TOOLS=true \
-    nohup fcc-server > /tmp/fcc-server.log 2>&1 & disown
+    nohup fcc-server > /tmp/fcc-ornith.log 2>&1 & disown
   for i in $(seq 1 10); do
-    if curl -s http://127.0.0.1:$FCC_PORT/health >/dev/null 2>&1; then
-      echo "FCC proxy ready (${i}s)"; break
+    if curl -s http://127.0.0.1:$FCC_ORNITH_PORT/health >/dev/null 2>&1; then
+      echo "FCC Ornith proxy ready (${i}s)"; break
     fi
     sleep 1
   done
 }
 
-# Completions for claude-local (model names for local Ornith)
-if command -v compdef >/dev/null 2>&1; then
-  _claude_local() {
-    local -a models
-    models=(
-      "claude-opus-4-8:Opus 4.8 (via OpenRouter)"
-      "claude-sonnet-5:Sonnet 5 (via OpenRouter)"
-      "claude-haiku-4-5:Haiku 4.5 (via OpenRouter)"
-    )
-    _describe 'model' models
-  }
-  compdef _claude_local claude-local
-fi
+_ensure_qwen_fcc_proxy() {
+  if lsof -i :$FCC_QWEN_PORT >/dev/null 2>&1; then return 0; fi
+  echo "Starting FCC proxy for Qwen on :$FCC_QWEN_PORT..."
+  PORT=$FCC_QWEN_PORT LLAMACPP_BASE_URL="http://127.0.0.1:8080/v1" \
+    MODEL="llamacpp/qwen3.6-27b-mtp-Q3_K_S.gguf" \
+    ENABLE_WEB_SERVER_TOOLS=true FCC_AUTO_INTERCEPT_WEB_TOOLS=true \
+    nohup fcc-server > /tmp/fcc-qwen.log 2>&1 & disown
+  for i in $(seq 1 10); do
+    if curl -s http://127.0.0.1:$FCC_QWEN_PORT/health >/dev/null 2>&1; then
+      echo "FCC Qwen proxy ready (${i}s)"; break
+    fi
+    sleep 1
+  done
+}
 
 # ── OpenCode via OpenRouter ───────────────────────────────────────
 code() {
@@ -120,23 +199,7 @@ code() {
       _ensure_ornith_server
       model="ornith/ornith-1.0-9b-Q5_K_M.gguf" ;;
     local)
-      # Auto-start Qwen server if not running
-      if ! lsof -i :8080 >/dev/null 2>&1; then
-        echo "Starting Qwen3.6-27B MTP server on :8080..."
-        export LD_LIBRARY_PATH="$HOME/.local/cuda-12.8/lib64:$LD_LIBRARY_PATH"
-        nohup "$HOME/llama.cpp/build/bin/llama-server" \
-          -m "$HOME/models/qwen3.6-27b-mtp-Q3_K_S.gguf" \
-          -ngl 99 --port 8080 \
-          --spec-type draft-mtp --spec-draft-n-max 2 \
-          > /tmp/qwen-server.log 2>&1 & disown
-        for i in $(seq 1 45); do
-          if curl -s http://127.0.0.1:8080/health >/dev/null 2>&1; then
-            echo "Qwen server ready (${i}s)"
-            break
-          fi
-          sleep 1
-        done
-      fi
+      _ensure_qwen_server
       model="local/qwen3.6-27b-mtp-Q3_K_S.gguf" ;;
     status|models)                exec "$HOME/Development/local-llms/scripts/model-status.sh" ;;
     "")                           opencode; return ;;

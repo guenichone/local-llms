@@ -13,8 +13,9 @@ claude-or-opus                     # Alias for Opus 4.8
 claude-or-haiku                    # Alias for Haiku 4.5
 claude-or-stop                     # Kill OpenRouter proxy
 
-claude-local                       # Ornith Q5 (local, free, ~30s delay)
-claude-local-stop                  # Kill local proxy
+ccornith                        # Ornith Q5 (local, free, ~30s delay)
+ccqwen                           # Qwen3.6-27B MTP (local)
+ccstop                           # Kill FCC proxies
 
 # ── OpenCode ──
 code                               # TUI model picker
@@ -27,13 +28,24 @@ code ornith                        # Ornith Q5 (local llama.cpp)
 code local                         # Qwen3.6-27B MTP (local llama.cpp)
 
 # ── Ornith Server ──
+# Ornith 9B Q5_K_M — optimal: vanilla build, -t 6, flash-attn on
 llama-server \
   -m ~/models/ornith-1.0-9b/ornith-1.0-9b-Q5_K_M.gguf \
-  -ngl 99 -t 8 -c 131072 --port 8082 --host 127.0.0.1 \
+  -ngl 99 -t 6 -c 200000 --port 8082 --host 127.0.0.1 \
   --temp 0.6 --top-p 0.95 --top-k 20 \
-  -ub 1024 -b 1024 --cache-reuse 256 \
+  -ub 4096 -b 4096 --cache-reuse 256 \
   --flash-attn on \
   --reasoning-preserve \
+  --cache-type-k q8_0 --cache-type-v q8_0
+
+# ── Qwen Server ──
+# Qwen3.6-27B MTP — optimal: -t 8, q4_0 cache, 200K ctx via --no-kv-offload
+llama-server \
+  -m ~/models/qwen3.6-27b-mtp-Q3_K_S.gguf \
+  -ngl 99 -t 8 -c 200000 --port 8080 --host 127.0.0.1 \
+  --spec-type draft-mtp --spec-draft-n-max 2 \
+  --flash-attn on \
+  --no-kv-offload \
   --cache-type-k q4_0 --cache-type-v q4_0
 
 # ── Hermes Agent ──
@@ -43,8 +55,11 @@ hermes config set base_url http://127.0.0.1:8082/v1
 hermes config set model /home/barrak/models/ornith-1.0-9b/ornith-1.0-9b-Q5_K_M.gguf
 
 # ── Utilities ──
-yt-transcript <video-id>            # YouTube transcript with timestamps
-yt-transcript <video-id> --text     # Plain text only
+yt-transcript <video-id>            # metadata + transcript
+yt-transcript <video-id> --meta     # metadata only
+yt-transcript <video-id> --text     # plain transcript
+yt-transcript <video-id> --thumb    # download thumbnails
+yt-transcript <video-id> --screenshots 3  # capture frames
 ```
 
 ## Shell Aliases
@@ -64,15 +79,16 @@ Runs Claude Code through a local proxy that translates model names to OpenRouter
 
 The proxy (`~/.claude/or-proxy.mjs`) runs on `localhost:8099`. Reads `OPENROUTER_API_KEY` from `.env`.
 
-### `claude-local` — Claude Code via Local Ornith
+### `ccornith` / `ccqwen` — Claude Code via Local Models
 
-Anthropic protocol proxy via free-claude-code (fcc). Auto-starts Ornith llama-server on `:8082` and fcc-server proxy on `:8097`.
+Anthropic protocol proxy via free-claude-code (fcc). Auto-starts model-specific llama-server and fcc proxy.
 
-- Proxy: `fcc-server` on `localhost:8097` (llama.cpp backend at `localhost:8082`)
-- Supports tool calls (passed through to Ornith; may or may not work depending on complexity)
-- Streams Anthropic SSE format properly
+- **`ccornith`**: Ornith Q5 on `:8082`, proxy on `:8097`
+- **`ccqwen`**: Qwen3.6-27B MTP on `:8080`, proxy on `:8098`
+- Only one model fits in VRAM — switching kills the other server automatically
+- Supports tool calls and web search/fetch (auto-intercepted by fcc)
 - Uses dummy `fcc-no-auth` key (proxy ignores it)
-- Known limitation: ~30s TTFT due to Ornith's `<think>` reasoning step
+- Known limitation: ~30s TTFT from Ornith reasoning, Qwen loads ~50s first time (OS cache makes subsequent loads faster)
 
 ### `code` — OpenCode via OpenRouter
 
@@ -92,13 +108,19 @@ Quick model selector. Tab completions available.
 
 ### `yt-transcript`
 
-Fetches YouTube transcripts. Uses `yt-dlp` under the hood.
+Fetches YouTube video data — metadata, transcript, thumbnails, screenshots. No API keys needed.
 
 ```bash
-yt-transcript <video-id-or-url>          # with timestamps
-yt-transcript <video-id-or-url> --text   # plain text only
-yt-transcript <video-id-or-url> --lang es
+yt-transcript <url>                 # metadata + transcript with timestamps
+yt-transcript <url> --meta          # title, channel, date, full description
+yt-transcript <url> --text          # plain transcript only
+yt-transcript <url> --json          # full JSON output
+yt-transcript <url> --thumb         # download 5 thumbnail sizes (free CDN)
+yt-transcript <url> --screenshots N # capture N evenly-spaced video frames
+yt-transcript <url> --out /path     # output directory for images
 ```
+
+Available as a skill in both Claude Code (`~/.claude/skills/yt-video-data/SKILL.md`) and OpenCode (`.opencode/skills/yt-video-data/SKILL.md`).
 
 ## Proxies
 
@@ -113,15 +135,12 @@ Strips `[1m]` suffixes from Claude Code's internal model names and maps them to 
 
 ### Local Proxy — free-claude-code (`fcc-server`)
 
-[free-claude-code](https://github.com/Alishahryar1/free-claude-code) is a full Anthropic Messages API → OpenAI Chat Completions proxy. Supports tool calls, model discovery, streaming, and admin UI.
+[free-claude-code](https://github.com/Alishahryar1/free-claude-code) is a full Anthropic Messages API → OpenAI Chat Completions proxy.
 
-- Port: `8097`
-- Backend: llama.cpp at `http://127.0.0.1:8082/v1`
-- Model: `anthropic/llamacpp/ornith-1.0-9b-Q5_K_M.gguf` (also available as "no thinking" variant)
-- Admin UI: `http://127.0.0.1:8097/admin` (local only)
+- **Ornith proxy**: Port `:8097`, backend `localhost:8082/v1`
+- **Qwen proxy**: Port `:8098`, backend `localhost:8080/v1`
 - Installed via `uv tool install` with Python 3.14.4 (asdf)
-- Runs `fcc-server` with env vars `PORT`, `LLAMACPP_BASE_URL`, `MODEL`
-- Client: `fcc-claude` — wraps Claude Code CLI
+- Client: `fcc-claude` — wraps Claude Code CLI, passes `--model` for correct display
 
 ## Benchmarks
 
