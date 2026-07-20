@@ -22,7 +22,11 @@ claude-go                   # DeepSeek via OpenCode Go ($10/mo: Flash default, P
 ccornith                    # Ornith Q5 (local, free)
 ccqwen                      # Qwen3.6-27B MTP (local)
 ccqwopus                    # Qwopus 35B Nano (local)
-ccstop                      # Kill all servers + proxies
+claude-omni                 # OmniRoute auto/coding (free tiers → paid → local)
+claude-omni-free            # OmniRoute coding:free (maximize free tiers)
+claude-omni-fast            # OmniRoute fast (lowest latency)
+claude-omni-pro             # OmniRoute coding:pro (premium models)
+ccstop                      # Kill all servers + proxies + OmniRoute
 
 # OpenCode
 code                        # TUI model picker

@@ -49,6 +49,23 @@ GO_PROXY_DIR="$HOME/Development/ai/local-llms/.claude/opencode-claude-proxy"
 
 claude-go() {
   local model="${1:-deepseek-v4-flash}"
+  # Normalize model aliases
+  case "$model" in
+    ds-pro|dsp|deepseek-v4-pro)    model="deepseek-v4-pro" ;;
+    ds-flash|dsf|ds|flash)         model="deepseek-v4-flash" ;;
+    kimi|kimi-k3)                  model="kimi-k3" ;;
+    kimi-27c|kimi-k2.7-code)       model="kimi-k2.7-code" ;;
+    kimi-26|kimi-k2.6)             model="kimi-k2.6" ;;
+    glm|glm-5.2|glm52)             model="glm-5.2" ;;
+    glm51|glm-5.1)                 model="glm-5.1" ;;
+    qwen|qwen3.7|qwen37)           model="qwen3.7-max" ;;
+    qwen36|qwen3.6)                model="qwen3.6-plus" ;;
+    grok|grok-4.5)                 model="grok-4.5" ;;
+    hy3|hy3-preview)               model="hy3-preview" ;;
+    minimax|minimax-m3)            model="minimax-m3" ;;
+    models|list|status)            _claude_go_models; return ;;
+    help|-h|--help)                _claude_go_help; return ;;
+  esac
   shift 2>/dev/null || true
 
   # Ensure API key is in settings.json
@@ -56,19 +73,37 @@ claude-go() {
   local key
   key=$(grep -E '^OPENCODE_GO_API_KEY=' "$HOME/Development/ai/local-llms/.env" 2>/dev/null | sed 's/^OPENCODE_GO_API_KEY=//')
   if [ -n "$key" ]; then
-    # Create settings.json from example if it doesn't exist
     if [ ! -f "$settings" ]; then
       cp "$GO_PROXY_DIR/settings.example.json" "$settings"
     fi
-    python3 -c "
+
+    # Detect key rotation: compare env key to what's in settings.json
+    local old_key
+    old_key=$(python3 -c "import json; print(json.load(open('$settings'))['upstream']['apiKey'])" 2>/dev/null)
+    local key_changed=false
+    if [ "$key" != "$old_key" ]; then
+      key_changed=true
+      python3 -c "
 import json
 with open('$settings') as f: s = json.load(f)
 s['upstream']['apiKey'] = '$key'
 with open('$settings', 'w') as f: json.dump(s, f, indent=2)
 " 2>/dev/null
+    fi
   fi
 
-  # Start proxy if not running
+  local proxy_was_running=true
+  if ! lsof -i :$GO_PROXY_PORT >/dev/null 2>&1; then
+    proxy_was_running=false
+  fi
+
+  # Restart proxy if key changed or if not running
+  if $key_changed && $proxy_was_running; then
+    echo "API key rotated — restarting proxy..." >&2
+    kill $(lsof -ti :$GO_PROXY_PORT) 2>/dev/null
+    sleep 0.5
+  fi
+
   if ! lsof -i :$GO_PROXY_PORT >/dev/null 2>&1; then
     echo "Starting OpenCode Go proxy..." >&2
     nohup node "$GO_PROXY_DIR/server.js" > /tmp/go-proxy.log 2>&1 & disown
@@ -85,11 +120,66 @@ with open('$settings', 'w') as f: json.dump(s, f, indent=2)
   claude --model "$model" "$@"
 }
 
+# Convenience aliases
+claude-go-pro()    { claude-go "deepseek-v4-pro" "$@"; }
+claude-go-flash()  { claude-go "deepseek-v4-flash" "$@"; }
+claude-go-kimi()   { claude-go "kimi-k3" "$@"; }
+claude-go-glm()    { claude-go "glm-5.2" "$@"; }
+claude-go-qwen()   { claude-go "qwen3.7-max" "$@"; }
+claude-go-grok()   { claude-go "grok-4.5" "$@"; }
+
+# Show available models from the running proxy
+_claude_go_models() {
+  local proxy_url="http://127.0.0.1:$GO_PROXY_PORT"
+  if ! lsof -i :$GO_PROXY_PORT >/dev/null 2>&1; then
+    echo "Go proxy not running. Start it with: claude-go" >&2
+    return 1
+  fi
+  echo "Available models via OpenCode Go:"
+  echo ""
+  curl -s "$proxy_url/v1/models" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for m in data.get('data', []):
+    print(f'  {m[\"id\"]}')
+" 2>/dev/null
+  echo ""
+  echo "Usage: claude-go <model-name>"
+  echo "Aliases: claude-go-pro, claude-go-flash, claude-go-kimi, claude-go-glm, claude-go-qwen, claude-go-grok"
+}
+
 # Kill the Go proxy
 claude-go-stop() {
   local pid
   pid=$(lsof -ti :$GO_PROXY_PORT 2>/dev/null)
   if [ -n "$pid" ]; then kill "$pid" 2>/dev/null; echo "Go proxy stopped"; fi
+}
+
+# Help
+_claude_go_help() {
+  echo "claude-go — Claude Code via OpenCode Go subscription"
+  echo ""
+  echo "Usage:"
+  echo "  claude-go [model]    Start Claude Code with the given model"
+  echo "  claude-go models     List available models"
+  echo "  claude-go stop       Stop the proxy"
+  echo "  claude-go help       This help"
+  echo ""
+  echo "Convenience aliases:"
+  echo "  claude-go-pro        DeepSeek V4 Pro"
+  echo "  claude-go-flash      DeepSeek V4 Flash (default)"
+  echo "  claude-go-kimi       Kimi K3"
+  echo "  claude-go-glm        GLM 5.2"
+  echo "  claude-go-qwen       Qwen 3.7 Max"
+  echo "  claude-go-grok       Grok 4.5"
+  echo ""
+  echo "Model shortcuts (first arg):"
+  echo "  ds, dsf, flash       deepseek-v4-flash"
+  echo "  dsp, ds-pro           deepseek-v4-pro"
+  echo "  kimi, kimi-k3         kimi-k3"
+  echo "  glm                   glm-5.2"
+  echo "  qwen, qwen3.7         qwen3.7-max"
+  echo "  grok                  grok-4.5"
 }
 
 # Kill the proxy
@@ -142,6 +232,39 @@ ccqwopus() {
 # Legacy alias
 claude-local() { ccornith "$@"; }
 
+# ── Claude Code via OmniRoute (AI gateway, free tiers + paid) ──────
+OMNIROUTE_PORT="${OMNIROUTE_PORT:-20128}"
+
+_ensure_omniroute() {
+  if curl -s http://localhost:$OMNIROUTE_PORT/v1/models >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "Starting OmniRoute server..." >&2
+  omniroute serve --port $OMNIROUTE_PORT --daemon --no-open > /tmp/omniroute.log 2>&1
+  for i in $(seq 1 15); do
+    if curl -s http://localhost:$OMNIROUTE_PORT/v1/models >/dev/null 2>&1; then
+      echo "OmniRoute ready (${i}s)" >&2; return 0
+    fi
+    sleep 2
+  done
+  echo "OmniRoute failed to start within 30s" >&2
+  return 1
+}
+
+claude-omni() {
+  local model="${1:-auto/coding}"
+  shift 2>/dev/null || true
+  _ensure_omniroute
+  ANTHROPIC_BASE_URL="http://localhost:$OMNIROUTE_PORT/v1" \
+  ANTHROPIC_API_KEY="sk-omniroute-local" \
+  claude --model "$model" "$@"
+}
+
+# Convenience variants
+claude-omni-free()   { claude-omni "auto/coding:free" "$@"; }
+claude-omni-fast()   { claude-omni "auto/fast" "$@"; }
+claude-omni-pro()    { claude-omni "auto/coding:pro" "$@"; }
+
 ccstop() {
   local pid
   pid=$(lsof -ti :$FCC_ORNITH_PORT 2>/dev/null)
@@ -159,6 +282,8 @@ ccstop() {
   [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Qwopus llama-server stopped"
   pid=$(lsof -ti :$HERMES_GEMMA_PORT 2>/dev/null | head -1)
   [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Gemma 4 llama-server stopped"
+  # Stop OmniRoute server
+  omniroute stop 2>/dev/null && echo "OmniRoute server stopped"
 }
 
 # ── Server helpers ─────────────────────────────────────────────────

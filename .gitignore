@@ -1,6 +1,5 @@
 .claude/settings.local.json
 .claude/get-openrouter-key.sh
-.claude/or-proxy.*
 .env
 .claude/opencode-claude-proxy/settings.json
 __pycache__/
