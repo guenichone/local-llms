@@ -1,0 +1,69 @@
+{
+  "model": "Ornith-1.0-9B",
+  "model_key": "ornith-1.0-9b",
+  "quant": "Q5_K_M",
+  "model_size_gb": 6.1,
+  "build": "vanilla",
+  "port": 8082,
+  "context_max": 200000,
+  "timestamp": "2026-07-20T16:56:13.603013+00:00",
+  "speed": {
+    "ngl99_t4_fa_on": {
+      "pp_t_s": 5781.900773,
+      "tg_t_s": 129.968497
+    },
+    "ngl99_t6_fa_on": {
+      "pp_t_s": 5852.129235,
+      "tg_t_s": 130.273016
+    },
+    "ngl99_t8_fa_on": {
+      "pp_t_s": 5791.693303,
+      "tg_t_s": 130.148956
+    },
+    "ngl99_t6_fa_off": {
+      "pp_t_s": 5833.376361,
+      "tg_t_s": 128.845079
+    },
+    "ngl99_t6_fa_on_kv_q8_0": {
+      "pp_t_s": 5760.734896,
+      "tg_t_s": 125.801997
+    },
+    "ngl99_t6_fa_on_kv_q4_0": {
+      "pp_t_s": 5743.318967,
+      "tg_t_s": 121.985122
+    },
+    "ngl0_t6": {
+      "pp_t_s": 849.688642,
+      "tg_t_s": 6.689039
+    }
+  },
+  "memory": {
+    "baseline": {
+      "vram_total_mb": 16303,
+      "vram_used_mb": 1065,
+      "vram_free_mb": 14913,
+      "ram_total_kb": 31895564,
+      "ram_available_kb": 27687892,
+      "ram_free_kb": 17295740
+    },
+    "loaded_ctx_max": {
+      "vram_total_mb": 16303,
+      "vram_used_mb": 13267,
+      "vram_free_mb": 2711,
+      "ram_total_kb": 31895564,
+      "ram_available_kb": 25466844,
+      "ram_free_kb": 15072764
+    },
+    "vram_delta_mb": 12202,
+    "model_vram_mb_est": 6246,
+    "kvcache_vram_mb_est": 5956,
+    "ram_delta_kb": 2221048,
+    "context_max": 200000
+  },
+  "coding_bench": null,
+  "external_scores": {
+    "swe_bench_verified": 69.4,
+    "terminal_bench": 43.1
+  },
+  "notes": "Best quant for 16GB: Q5_K_M. Vanilla build + flash-attn is optimal."
+}

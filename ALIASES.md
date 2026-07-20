@@ -12,6 +12,13 @@ For external references (papers, videos, repos), see [REFERENCES.md](./REFERENCE
 # Claude Code
 claude-or                   # Opus 4.8 via OpenRouter ($)
 claude-or-sonnet            # Sonnet 5 via OpenRouter
+claude-or-ds                # DeepSeek V4 Flash via OpenRouter ($)
+claude-or-dsp               # DeepSeek V4 Pro via OpenRouter ($)
+claude-or-qwen              # Qwen 3.6 27B via OpenRouter
+claude-or-qwf               # Qwen 3.6 Flash via OpenRouter
+claude-or-glm               # GLM 5.2 via OpenRouter
+claude-or-gemini            # Gemini 2.5 Flash via OpenRouter
+claude-go                   # DeepSeek via OpenCode Go ($10/mo: Flash default, Pro via arg)
 ccornith                    # Ornith Q5 (local, free)
 ccqwen                      # Qwen3.6-27B MTP (local)
 ccqwopus                    # Qwopus 35B Nano (local)
@@ -34,7 +41,35 @@ hermes-ds                   # DeepSeek V4 Pro (remote)
 
 # Utilities
 yt-transcript <url>         # YouTube transcript + metadata
+bench                       # List available models
+bench <model> <quant>       # Run full benchmark (speed + memory)
+bench <model> <quant> -a    # All phases including coding quality
+bench --diff                # Show proposed CLAUDE.md table update
 ```
+
+---
+
+## Benchmarking
+
+```bash
+# List available models and quants
+bench
+
+# Speed + memory benchmark (default, ~2 min)
+bench ornith-1.0-9b Q5_K_M
+
+# Speed only (~1 min)
+bench ornith-1.0-9b Q5_K_M --speed-only
+
+# Full benchmark with coding quality (~7-8 min)
+bench ornith-1.0-9b Q5_K_M --all
+
+# Show proposed CLAUDE.md table update
+bench --diff
+```
+
+See `.opencode/skills/benchmark-model/SKILL.md` for full documentation.
+Results stored in `benchmarks/master_results.json` and `benchmarks/models/<model>.md`.
 
 ---
 
@@ -46,6 +81,9 @@ yt-transcript <url>         # YouTube transcript + metadata
 | 8082 | Ornith-1.0-9B Q5_K_M | 6 GB | 200K | vanilla llama.cpp | `ccornith`, `code ornith`, `hermes-ornith` |
 | 8083 | Qwopus 35B Nano (MTP) | 11 GB | 131K | turboquant | `ccqwopus`, `code qwopus`, `hermes-qwopus` |
 | 8084 | Gemma 4 E4B Q4_K_M | 3 GB | 32K | vanilla llama.cpp | `hermes-gemma` |
+
+| 8099 | OR proxy (OpenRouter) | — | — | node | `claude-or*` |
+| 8787 | Go proxy (OpenCode Go) | — | — | node (mothieras) | `claude-go*` |
 
 FCC proxy ports: 8097 (Ornith), 8098 (Qwen), 8100 (Qwopus).
 OpenRouter proxy port: 8099.
@@ -115,6 +153,35 @@ Local model aliases auto-start the llama-server before launching OpenCode.
 | `code <anything>` | `openrouter/<anything>` |
 
 Provider config in [`opencode.json`](./opencode.json).
+
+---
+
+## OpenCode Go Proxy (subscription)
+
+Uses [mothieras/opencode-claude-proxy](https://github.com/mothieras/opencode-claude-proxy) for Anthropic↔OpenAI translation. Proxy lives at `.claude/opencode-claude-proxy/` on port `:8787`.
+
+### Setup (one-time)
+
+1. Subscribe at [opencode.ai/auth](https://opencode.ai/auth) → OpenCode Go ($5 first month, $10/month)
+2. Copy API key → add to `.env`: `OPENCODE_GO_API_KEY=sk-...`
+3. Run `claude-go "test"` — auto-starts proxy, injects key from .env
+
+### Models (2 available)
+
+| Model | Requests/month | Best for |
+|---|---|---|
+| `deepseek-v4-flash` | ~31K | Default — best value, fast |
+| `deepseek-v4-pro` | ~17K | Smarter reasoning |
+
+### Usage
+
+```bash
+claude-go "write fibonacci"              # DeepSeek Flash (default)
+claude-go deepseek-v4-pro "refactor"    # DeepSeek Pro
+claude-go-stop                           # kill proxy
+```
+
+**Cost:** $10/month flat, no per-token charges. Limits: 5hr/$12, weekly/$30, monthly/$60.
 
 ---
 
@@ -224,6 +291,33 @@ cp ~/Development/ai/local-llms/agents/claude-code/hooks/check-context.sh ~/.clau
 
 # Hermes profiles are created via `hermes profile create` — see CLAUDE.md
 ```
+
+---
+
+## OpenRouter Proxy Model Map
+
+The `or-proxy.mjs` (port 8099) translates Claude Code model names to OpenRouter format. All models bill through the same `OPENROUTER_API_KEY`.
+
+| Alias Shortcut | What You Type | OpenRouter Model |
+|---|---|---|
+| `claude-or` | `claude-opus-4-8` | `anthropic/claude-opus-4.8` |
+| `claude-or-sonnet` | `claude-sonnet-5` | `anthropic/claude-sonnet-5` |
+| `claude-or-ds` | `deepseek-v4-flash` | `deepseek/deepseek-v4-flash` |
+| `claude-or-dsp` | `deepseek-v4-pro` | `deepseek/deepseek-v4-pro` |
+| `claude-or-qwen` | `qwen3.6-27b` | `qwen/qwen3.6-27b` |
+| `claude-or-qwf` | `qwen3.6-flash` | `qwen/qwen3.6-flash` |
+| `claude-or-glm` | `glm-5.2` | `z-ai/glm-5.2` |
+| `claude-or-gemini` | `gemini-flash` | `google/gemini-2.5-flash` |
+
+**Pass-through:** Any model name not in the map is forwarded to OpenRouter as-is. You can use raw OpenRouter paths directly:
+```bash
+claude-or --model "google/gemini-2.5-pro" -p "Hello"
+claude-or --model "meta-llama/llama-4-maverick" -p "Hello"
+```
+
+All shortcuts also work with `DSF`/`DSP`/`QWF`/`QWC`/`GLM5` short variants. See `or-proxy.mjs` MODEL_MAP for full list.
+
+**Cost control:** DeepSeek Flash costs ~$0.03/M tokens — much cheaper than Claude models. Good for non-critical tasks.
 
 ---
 

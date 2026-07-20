@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Coding benchmark for Ornith-1.0-9B via local API — supports --model flag"""
+"""Coding benchmark via local API — supports --api-url, --quant, --json-only flags"""
 
 import argparse, json, time, sys, os
 from datetime import datetime
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
+# Defaults — overridden by CLI flags
 API_URL = "http://127.0.0.1:8082/v1/chat/completions"
-MODELS_DIR = "/home/barrak/models/ornith-1.0-9b"
+MODEL = "unknown-model"
+QUANT = "unknown"
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")  # repo-relative
+SUMMARY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "")        # results json next to us
+JSON_ONLY = False
 
 TASKS = [
     # ── Code generation ──
@@ -354,12 +359,12 @@ def query_model(prompt, max_tokens=4096, temp=0.6):
         return {"error": str(e)}
 
 def run_benchmarks():
-    quant = "NVFP4-MTP" if "NVFP4" in MODEL else "Q6_K" if "Q6" in MODEL else "Q5_K_M" if "Q5" in MODEL else "Q4_K_M"
-    print(f"Ornith-1.0-9B Coding Benchmark — {quant}")
-    print(f"Started: {datetime.now().isoformat()}")
-    print(f"Model: {MODEL}")
-    print(f"API: {API_URL}")
-    print(f"{'='*70}")
+    if not JSON_ONLY:
+        print(f"Coding Benchmark — {QUANT}")
+        print(f"Started: {datetime.now().isoformat()}")
+        print(f"Model: {MODEL}")
+        print(f"API: {API_URL}")
+        print(f"{'='*70}")
     
     results = []
     total_prompt_tokens = 0
@@ -367,33 +372,37 @@ def run_benchmarks():
     total_latency = 0
 
     for task in TASKS:
-        print(f"\n{'─'*70}")
-        print(f"[{task['category']}] {task['name']}: {task['description']}")
-        print(f"{'─'*70}")
+        if not JSON_ONLY:
+            print(f"\n{'─'*70}")
+            print(f"[{task['category']}] {task['name']}: {task['description']}")
+            print(f"{'─'*70}")
         
         result = query_model(task["prompt"])
         
         if "error" in result:
-            print(f"  ERROR: {result['error']}")
+            if not JSON_ONLY:
+                print(f"  ERROR: {result['error']}")
             results.append({"task": task["name"], "category": task["category"], "error": result["error"]})
             continue
         
         content = result["content"]
-        output_preview = content[:200].replace('\n', '\\n') + ("..." if len(content) > 200 else "")
         
-        print(f"  Prompt: {result['prompt_tokens']} tok @ {result['prompt_tps']:.1f} t/s ({result['prompt_time_s']:.2f}s)")
-        print(f"  Gen:    {result['output_tokens']} tok @ {result['gen_tps']:.1f} t/s ({result['gen_time_s']:.2f}s)")
-        print(f"  TTFT:   {result['ttft']:.2f}s")
-        print(f"  Total:  {result['elapsed']:.2f}s")
-        print(f"  Output preview: {output_preview}")
+        if not JSON_ONLY:
+            output_preview = content[:200].replace('\n', '\\n') + ("..." if len(content) > 200 else "")
+            print(f"  Prompt: {result['prompt_tokens']} tok @ {result['prompt_tps']:.1f} t/s ({result['prompt_time_s']:.2f}s)")
+            print(f"  Gen:    {result['output_tokens']} tok @ {result['gen_tps']:.1f} t/s ({result['gen_time_s']:.2f}s)")
+            print(f"  TTFT:   {result['ttft']:.2f}s")
+            print(f"  Total:  {result['elapsed']:.2f}s")
+            print(f"  Output preview: {output_preview}")
         
-        safe_name = f"{quant}-{task['name']}"
-        output_dir = "/home/barrak/Development/local-llms/benchmarks/outputs"
-        os.makedirs(output_dir, exist_ok=True)
-        output_file = os.path.join(output_dir, f"{safe_name}.txt")
+        safe_name = f"{QUANT}-{task['name']}"
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        output_file = os.path.join(OUTPUT_DIR, f"{safe_name}.txt")
         with open(output_file, "w") as f:
             f.write(content)
-        print(f"  Saved: {output_file}")
+        
+        if not JSON_ONLY:
+            print(f"  Saved: {output_file}")
         
         total_prompt_tokens += result["prompt_tokens"]
         total_output_tokens += result["output_tokens"]
@@ -414,45 +423,75 @@ def run_benchmarks():
             "output_len": len(content)
         })
     
-    print(f"\n{'='*70}")
-    print(f"SUMMARY — {quant}")
-    print(f"{'='*70}")
-    print(f"Tasks: {len(results)} / {len(TASKS)} completed")
-    print(f"Total prompt tokens: {total_prompt_tokens}")
-    print(f"Total output tokens: {total_output_tokens}")
-    print(f"Total time: {total_latency:.2f}s")
-    if results:
-        avg_ttft = sum(r["ttft"] for r in results) / len(results)
-        avg_gen_tps = sum(r["gen_tps"] for r in results) / len(results)
-        avg_prompt_tps = sum(r["prompt_tps"] for r in results) / len(results)
-        avg_gen = sum(r["gen_time_s"] for r in results) / len(results)
-        avg_output = sum(r["output_tokens"] for r in results) / len(results)
-        print(f"Avg TTFT:              {avg_ttft:.2f}s")
-        print(f"Avg prompt t/s:        {avg_prompt_tps:.1f}")
-        print(f"Avg gen t/s:           {avg_gen_tps:.1f}")
-        print(f"Avg gen time:          {avg_gen:.2f}s")
-        print(f"Avg output tokens:     {avg_output:.0f}")
+    # Compute aggregates
+    avg_ttft = sum(r["ttft"] for r in results if "ttft" in r) / max(len(results), 1)
+    avg_gen_tps = sum(r["gen_tps"] for r in results if "gen_tps" in r) / max(len(results), 1)
+    avg_prompt_tps = sum(r["prompt_tps"] for r in results if "prompt_tps" in r) / max(len(results), 1)
+    avg_gen_time = sum(r["gen_time_s"] for r in results if "gen_time_s" in r) / max(len(results), 1)
+    avg_output_tokens = sum(r["output_tokens"] for r in results if "output_tokens" in r) / max(len(results), 1)
     
     summary = {
         "model": MODEL,
-        "quant": quant,
+        "quant": QUANT,
         "timestamp": datetime.now().isoformat(),
         "total_tasks": len(TASKS),
         "completed": len(results),
         "total_prompt_tokens": total_prompt_tokens,
         "total_output_tokens": total_output_tokens,
         "total_time_seconds": round(total_latency, 2),
+        "avg_ttft": round(avg_ttft, 2),
+        "avg_gen_tps": round(avg_gen_tps, 1),
+        "avg_prompt_tps": round(avg_prompt_tps, 1),
+        "avg_gen_time_s": round(avg_gen_time, 2),
+        "avg_output_tokens": round(avg_output_tokens, 0),
         "results": results
     }
-    summary_file = f"/home/barrak/Development/local-llms/benchmarks/results_{quant}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    
+    summary_file = os.path.join(SUMMARY_DIR, f"results_{QUANT}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
     with open(summary_file, "w") as f:
         json.dump(summary, f, indent=2)
-    print(f"\nResults saved: {summary_file}")
+    
+    if JSON_ONLY:
+        print(json.dumps(summary, indent=2))
+    else:
+        print(f"\n{'='*70}")
+        print(f"SUMMARY — {QUANT}")
+        print(f"{'='*70}")
+        print(f"Tasks: {len(results)} / {len(TASKS)} completed")
+        print(f"Total prompt tokens: {total_prompt_tokens}")
+        print(f"Total output tokens: {total_output_tokens}")
+        print(f"Total time: {total_latency:.2f}s")
+        print(f"Avg TTFT:              {avg_ttft:.2f}s")
+        print(f"Avg prompt t/s:        {avg_prompt_tps:.1f}")
+        print(f"Avg gen t/s:           {avg_gen_tps:.1f}")
+        print(f"Avg gen time:          {avg_gen_time:.2f}s")
+        print(f"Avg output tokens:     {avg_output_tokens:.0f}")
+        print(f"\nResults saved: {summary_file}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="Q4_K_M", choices=["Q4_K_M", "Q5_K_M", "Q6_K", "NVFP4-MTP", "Q8_0"],
-                        help="GGUF quantization to use")
+    parser = argparse.ArgumentParser(description="Coding benchmark for local LLMs")
+    parser.add_argument("--api-url", default="http://127.0.0.1:8082/v1",
+                        help="Base API URL (e.g. http://127.0.0.1:8082/v1)")
+    parser.add_argument("--quant", default="Q5_K_M",
+                        help="Quant label for output naming (e.g. Q5_K_M)")
+    parser.add_argument("--model", default="local-model",
+                        help="Model name sent in API request payload")
+    parser.add_argument("--json-only", action="store_true",
+                        help="Output summary as JSON to stdout (machine-readable)")
+    parser.add_argument("--output-dir", default=None,
+                        help="Directory for raw output .txt files")
+    parser.add_argument("--summary-dir", default=None,
+                        help="Directory for results JSON file")
     args = parser.parse_args()
-    MODEL = f"{MODELS_DIR}/ornith-1.0-9b-{args.model}.gguf"
+    
+    API_URL = args.api_url.rstrip("/") + "/chat/completions"
+    MODEL = args.model
+    QUANT = args.quant
+    JSON_ONLY = args.json_only
+    
+    if args.output_dir:
+        OUTPUT_DIR = args.output_dir
+    if args.summary_dir:
+        SUMMARY_DIR = args.summary_dir
+    
     run_benchmarks()

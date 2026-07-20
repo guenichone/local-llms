@@ -1,0 +1,248 @@
+{
+  "meta": {
+    "gpu": "NVIDIA GeForce RTX 5080 16GB",
+    "cpu": "AMD Ryzen 7 9800X3D",
+    "cuda": "12.8.57",
+    "os": "WSL2 Ubuntu 24.04",
+    "last_updated": "2026-07-20T18:56:13Z",
+    "description": "Normalized benchmark results for all tested models/quants. One entry per model+quant+build combo. Updated by run_full_benchmark.py."
+  },
+  "entries": {
+    "ornith-1.0-9b/Q5_K_M/vanilla": {
+      "model": "Ornith-1.0-9B",
+      "model_key": "ornith-1.0-9b",
+      "family": "qwen35",
+      "architecture": "9B dense, 33 layers, GQA (32q/8kv heads)",
+      "quant": "Q5_K_M",
+      "model_size_gb": 6.1,
+      "build": "vanilla",
+      "port": 8082,
+      "context_max": 200000,
+      "timestamp": "2026-07-20T16:56:13Z",
+      "speed": {
+        "ngl99_t4_fa_on": {"pp_t_s": 5782, "tg_t_s": 130.0},
+        "ngl99_t6_fa_on": {"pp_t_s": 5852, "tg_t_s": 130.3},
+        "ngl99_t8_fa_on": {"pp_t_s": 5792, "tg_t_s": 130.1},
+        "ngl99_t6_fa_off": {"pp_t_s": 5833, "tg_t_s": 128.8},
+        "ngl99_t6_fa_on_kv_q8_0": {"pp_t_s": 5761, "tg_t_s": 125.8},
+        "ngl99_t6_fa_on_kv_q4_0": {"pp_t_s": 5743, "tg_t_s": 122.0},
+        "ngl0_t6": {"pp_t_s": 850, "tg_t_s": 6.7}
+      },
+      "memory": {
+        "vram_delta_mb": 12202,
+        "model_vram_mb_est": 6246,
+        "kvcache_vram_mb_est": 5956,
+        "ram_delta_kb": 2221048,
+        "context_max": 200000
+      },
+      "coding_bench": null,
+      "external_scores": {"swe_bench_verified": 69.4, "terminal_bench": 43.1},
+      "references": {
+        "huggingface": [
+          "https://huggingface.co/collections/deepreinforce-ai/ornith-10",
+          "https://huggingface.co/bartowski/deepreinforce-ai_Ornith-1.0-9B-GGUF",
+          "https://huggingface.co/s-batman/Ornith-1.0-9B-NVFP4-MTP-GGUF"
+        ],
+        "articles": [
+          "https://deep-reinforce.com/ornith_1_0.html",
+          "https://codersera.com/blog/how-to-run-ornith-1-0-locally-2026/"
+        ],
+        "videos": [],
+        "github": []
+      },
+      "notes": "Best quant for Ornith on 16GB. Vanilla build + flash-attn on optimal. t=6 threads best."
+    },
+    "ornith-1.0-9b/Q4_K_M/vanilla": {
+      "model": "Ornith-1.0-9B",
+      "model_key": "ornith-1.0-9b",
+      "family": "qwen35",
+      "architecture": "9B dense, 33 layers, GQA (32q/8kv heads)",
+      "quant": "Q4_K_M",
+      "model_size_gb": 5.3,
+      "build": "vanilla",
+      "port": 8082,
+      "context_max": 200000,
+      "timestamp": "2026-07-06T14:06:31Z",
+      "speed": {
+        "ngl99_t6_fa_on": {"pp_t_s": 1585, "tg_t_s": 123}
+      },
+      "memory": {
+        "vram_delta_mb": 8600,
+        "model_vram_mb_est": 5427,
+        "kvcache_vram_mb_est": 3173,
+        "context_max": 200000
+      },
+      "coding_bench": {
+        "total_tasks": 11,
+        "completed": 11,
+        "total_prompt_tokens": 2426,
+        "total_output_tokens": 32102,
+        "total_time_seconds": 317.52,
+        "avg_ttft": 23,
+        "avg_gen_tps": 123,
+        "avg_prompt_tps": 725
+      },
+      "external_scores": {"swe_bench_verified": 69.4, "terminal_bench": 43.1},
+      "references": {
+        "huggingface": [
+          "https://huggingface.co/collections/deepreinforce-ai/ornith-10",
+          "https://huggingface.co/bartowski/deepreinforce-ai_Ornith-1.0-9B-GGUF"
+        ],
+        "articles": [
+          "https://deep-reinforce.com/ornith_1_0.html",
+          "https://codersera.com/blog/how-to-run-ornith-1-0-locally-2026/"
+        ],
+        "videos": [],
+        "github": []
+      },
+      "notes": "Faster than Q5_K_M but missed subtle bugs in debugging tasks. Tested on CUDA 13.3 (broken MMQ -> cuBLAS fallback, ~5x slower prompt)."
+    },
+    "ornith-1.0-9b/Q6_K/vanilla": {
+      "model": "Ornith-1.0-9B",
+      "model_key": "ornith-1.0-9b",
+      "family": "qwen35",
+      "architecture": "9B dense, 33 layers, GQA (32q/8kv heads)",
+      "quant": "Q6_K",
+      "model_size_gb": 7.2,
+      "build": "vanilla",
+      "port": 8082,
+      "context_max": 200000,
+      "timestamp": "2026-07-06T16:54:14Z",
+      "speed": {
+        "ngl99_t6_fa_on": {"pp_t_s": 970, "tg_t_s": 48}
+      },
+      "memory": {
+        "vram_delta_mb": 10500,
+        "model_vram_mb_est": 7373,
+        "kvcache_vram_mb_est": 3127,
+        "context_max": 200000
+      },
+      "coding_bench": {
+        "total_tasks": 11,
+        "completed": 11,
+        "avg_gen_tps": 48,
+        "avg_prompt_tps": 970
+      },
+      "external_scores": {"swe_bench_verified": 69.4, "terminal_bench": 43.1},
+      "references": {
+        "huggingface": [
+          "https://huggingface.co/collections/deepreinforce-ai/ornith-10",
+          "https://huggingface.co/bartowski/deepreinforce-ai_Ornith-1.0-9B-GGUF"
+        ],
+        "articles": [
+          "https://deep-reinforce.com/ornith_1_0.html"
+        ],
+        "videos": [],
+        "github": []
+      },
+      "notes": "6-bit kernel inefficient on NVIDIA. 60% gen speed drop for 18% more model size. Not recommended."
+    },
+    "ornith-1.0-9b/NVFP4-MTP/vanilla": {
+      "model": "Ornith-1.0-9B",
+      "model_key": "ornith-1.0-9b",
+      "family": "qwen35",
+      "architecture": "9B dense, 33 layers, GQA (32q/8kv heads)",
+      "quant": "NVFP4-MTP",
+      "model_size_gb": 5.1,
+      "build": "vanilla",
+      "port": 8082,
+      "context_max": 131072,
+      "timestamp": "2026-07-06T16:21:25Z",
+      "speed": {
+        "ngl99_t6_fa_on": {"pp_t_s": 751, "tg_t_s": 76}
+      },
+      "memory": {
+        "vram_delta_mb": 7300,
+        "model_vram_mb_est": 5222,
+        "kvcache_vram_mb_est": 2078,
+        "context_max": 131072
+      },
+      "coding_bench": {
+        "total_tasks": 11,
+        "completed": 8,
+        "avg_gen_tps": 76,
+        "avg_prompt_tps": 751
+      },
+      "external_scores": {"swe_bench_verified": 69.4, "terminal_bench": 43.1},
+      "references": {
+        "huggingface": [
+          "https://huggingface.co/s-batman/Ornith-1.0-9B-NVFP4-MTP-GGUF"
+        ],
+        "articles": [],
+        "videos": [],
+        "github": []
+      },
+      "notes": "Native Blackwell format. 3/11 tasks empty output. NVFP4 kernels not optimized in llama.cpp. Not recommended."
+    },
+    "qwen3.6-27b/Q3_K_S/turboquant": {
+      "model": "Qwen3.6-27B MTP",
+      "model_key": "qwen3.6-27b",
+      "family": "qwen36",
+      "architecture": "27B dense, MTP speculative decoding heads",
+      "quant": "Q3_K_S",
+      "model_size_gb": 12.0,
+      "build": "turboquant",
+      "port": 8080,
+      "context_max": 200000,
+      "timestamp": "2026-07-20T00:00:00Z",
+      "speed": {
+        "ngl99_t4_fa_on": {"pp_t_s": 1692, "tg_t_s": 47.4}
+      },
+      "memory": {
+        "vram_delta_mb": 14800,
+        "model_vram_mb_est": 12288,
+        "kvcache_vram_mb_est": 2512,
+        "ram_delta_kb": null,
+        "context_max": 200000
+      },
+      "coding_bench": null,
+      "external_scores": {"swe_bench_verified": null, "terminal_bench": null},
+      "references": {
+        "huggingface": [],
+        "articles": [
+          "https://codersera.com/blog/how-to-run-qwen-3-6-locally-2026/"
+        ],
+        "videos": [],
+        "github": [
+          "https://github.com/TheTom/llama-cpp-turboquant"
+        ]
+      },
+      "notes": "Turboquant build with turbo3 KV. MTP spec decoding. 200K ctx on single 5080. Context vs speed: 55K=60t/s, 131K=17t/s, 200K=10t/s."
+    },
+    "qwopus-35b-nano/Nano/turboquant": {
+      "model": "Qwopus 35B Nano",
+      "model_key": "qwopus-35b-nano",
+      "family": "qwopus",
+      "architecture": "35B MoE (3B active), 256 experts, MTP heads, Opus reasoning fine-tune",
+      "quant": "Nano",
+      "model_size_gb": 10.9,
+      "build": "turboquant",
+      "port": 8083,
+      "context_max": 131072,
+      "timestamp": "2026-07-20T00:00:00Z",
+      "speed": {
+        "ngl99_t8_fa_on": {"pp_t_s": 6135, "tg_t_s": 164.6}
+      },
+      "memory": {
+        "vram_delta_mb": 12700,
+        "model_vram_mb_est": 11162,
+        "kvcache_vram_mb_est": 1538,
+        "ram_delta_kb": null,
+        "context_max": 131072
+      },
+      "coding_bench": null,
+      "external_scores": {"swe_bench_verified": null, "terminal_bench": null},
+      "references": {
+        "huggingface": [
+          "https://huggingface.co/mudler"
+        ],
+        "articles": [],
+        "videos": [],
+        "github": [
+          "https://github.com/TheTom/llama-cpp-turboquant"
+        ]
+      },
+      "notes": "Opus reasoning traces fine-tune on Qwen3.6-35B-A3B. APEX Nano quant. 165 t/s tg128. -fit off required (MTP hang). No SWE-bench scores yet (testing underway)."
+    }
+  }
+}

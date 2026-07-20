@@ -5,9 +5,11 @@
 This repo is split into three indexes — use the right one for what you need:
 
 | File | Purpose | When to use |
-|---|---|---|
+|---|---|---|---|
 | **[ALIASES.md](./ALIASES.md)** | Every alias, hook, prompt, server port, env var | "How do I launch X?" / "What port is Y on?" / "Where's the hook script?" |
 | **[REFERENCES.md](./REFERENCES.md)** | External sources (papers, videos, blog posts, PRs, repos, models) | "Where did we learn about Bonsai?" / "What was that Codacus video?" |
+| **[benchmarks/master_results.json](./benchmarks/master_results.json)** | Normalized benchmark data for all tested models | "What's the latest pp/tg for Q5_K_M?" / "Compare all models" |
+| **[benchmarks/models/](./benchmarks/models/)** | Per-model knowledge files with all findings | "Show me everything about Ornith 9B" |
 | **CLAUDE.md** (this file) | Operational knowledge: benchmarks, bugs, build instructions, model configs | "What's the best quant for Ornith?" / "How to rebuild llama.cpp?" / "Why is CUDA 13.3 broken?" |
 
 Other tracked files:

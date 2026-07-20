@@ -32,6 +32,66 @@ claude-or-sonnet() { claude-or "claude-sonnet-5" "$@"; }
 claude-or-opus()   { claude-or "claude-opus-4-8" "$@"; }
 claude-or-haiku()  { claude-or "claude-haiku-4-5" "$@"; }
 
+# Non-Anthropic models via the same proxy (OpenRouter credits)
+# Usage: claude-or-ds "your prompt" or claude-or-ds -p "prompt" --print
+claude-or-ds()     { claude-or "deepseek-v4-flash" "$@"; }
+claude-or-dsp()    { claude-or "deepseek-v4-pro" "$@"; }
+claude-or-qwen()   { claude-or "qwen3.6-27b" "$@"; }
+claude-or-qwf()    { claude-or "qwen3.6-flash" "$@"; }
+claude-or-glm()    { claude-or "glm-5.2" "$@"; }
+claude-or-gemini() { claude-or "gemini-flash" "$@"; }
+
+# ── Claude Code via OpenCode Go (subscription) ─────────────────
+# Uses mothieras/opencode-claude-proxy for Anthropic↔OpenAI translation
+# Proxy lives at .claude/opencode-claude-proxy/
+GO_PROXY_PORT="${GO_PROXY_PORT:-8787}"
+GO_PROXY_DIR="$HOME/Development/ai/local-llms/.claude/opencode-claude-proxy"
+
+claude-go() {
+  local model="${1:-deepseek-v4-flash}"
+  shift 2>/dev/null || true
+
+  # Ensure API key is in settings.json
+  local settings="$GO_PROXY_DIR/settings.json"
+  local key
+  key=$(grep -E '^OPENCODE_GO_API_KEY=' "$HOME/Development/ai/local-llms/.env" 2>/dev/null | sed 's/^OPENCODE_GO_API_KEY=//')
+  if [ -n "$key" ]; then
+    # Create settings.json from example if it doesn't exist
+    if [ ! -f "$settings" ]; then
+      cp "$GO_PROXY_DIR/settings.example.json" "$settings"
+    fi
+    python3 -c "
+import json
+with open('$settings') as f: s = json.load(f)
+s['upstream']['apiKey'] = '$key'
+with open('$settings', 'w') as f: json.dump(s, f, indent=2)
+" 2>/dev/null
+  fi
+
+  # Start proxy if not running
+  if ! lsof -i :$GO_PROXY_PORT >/dev/null 2>&1; then
+    echo "Starting OpenCode Go proxy..." >&2
+    nohup node "$GO_PROXY_DIR/server.js" > /tmp/go-proxy.log 2>&1 & disown
+    sleep 1
+    if ! lsof -i :$GO_PROXY_PORT >/dev/null 2>&1; then
+      echo "Error: Proxy failed to start. Check /tmp/go-proxy.log" >&2
+      return 1
+    fi
+  fi
+
+  ANTHROPIC_BASE_URL="http://127.0.0.1:$GO_PROXY_PORT" \
+  ANTHROPIC_API_KEY="sk-ant-api03-go-local-key-placeholder" \
+  CLAUDE_STATUSLINE_IS_GO=1 \
+  claude --model "$model" "$@"
+}
+
+# Kill the Go proxy
+claude-go-stop() {
+  local pid
+  pid=$(lsof -ti :$GO_PROXY_PORT 2>/dev/null)
+  if [ -n "$pid" ]; then kill "$pid" 2>/dev/null; echo "Go proxy stopped"; fi
+}
+
 # Kill the proxy
 claude-or-stop() {
   local pid
@@ -397,3 +457,16 @@ _ensure_gemma_server() {
 
 # ── yt-transcript shortcut ────────────────────────────────────────
 alias yt-transcript="$HOME/Development/local-llms/yt-transcript"
+
+# ── Benchmark shortcut ──────────────────────────────────────────
+bench() {
+  local script="$HOME/Development/local-llms/benchmarks/run_full_benchmark.py"
+  if [ $# -eq 0 ]; then
+    # Default: list available models
+    python3 "$script" --list
+  elif [ "$1" = "--diff" ] || [ "$1" = "-d" ]; then
+    python3 "$script" --diff-claude
+  else
+    python3 "$script" "$@"
+  fi
+}

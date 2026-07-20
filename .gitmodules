@@ -1,0 +1,3 @@
+[submodule ".claude/opencode-claude-proxy"]
+	path = .claude/opencode-claude-proxy
+	url = https://github.com/mothieras/opencode-claude-proxy.git
