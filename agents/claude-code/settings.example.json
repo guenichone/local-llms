@@ -1,0 +1,17 @@
+{
+  "_comment": "Reference: add this to ~/.claude/settings.json to enable context-overflow protection for local models.",
+  "_note": "Only activates when CLAUDE_LOCAL_MODEL env var is set (done by ccornith/ccqwopus/ccqwen aliases).",
+  "hooks": {
+    "PostToolBatch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/barrak/.claude/hooks/check-context.sh",
+            "args": []
+          }
+        ]
+      }
+    ]
+  }
+}

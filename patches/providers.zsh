@@ -42,8 +42,10 @@ claude-or-stop() {
 # ── Claude Code via Local Models (free-claude-code proxy) ──────────
 FCC_ORNITH_PORT="${FCC_ORNITH_PORT:-8097}"
 FCC_QWEN_PORT="${FCC_QWEN_PORT:-8098}"
+FCC_QWOPUS_PORT="${FCC_QWOPUS_PORT:-8100}"
 ORNITH_MODEL="$HOME/models/ornith-1.0-9b/ornith-1.0-9b-Q5_K_M.gguf"
 QWEN_MODEL="$HOME/models/qwen3.6-27b-mtp-Q3_K_S.gguf"
+QWOPUS_MODEL="$HOME/models/qwopus/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Nano.gguf"
 
 # ── ccornith — Claude Code with Ornith-1.0-9B Q5 (local) ──────────
 # Benchmarks (RTX 5080, vanilla build): pp512=6044 t/s, tg128=131 t/s
@@ -51,7 +53,9 @@ QWEN_MODEL="$HOME/models/qwen3.6-27b-mtp-Q3_K_S.gguf"
 ccornith() {
   _ensure_ornith_server
   _ensure_ornith_fcc_proxy
-  PORT=$FCC_ORNITH_PORT fcc-claude --model "ornith-1.0-9b-Q5_K_M.gguf" "$@"
+  CLAUDE_LOCAL_MODEL=1 CLAUDE_LOCAL_MODEL_PORT=8082 \
+  PORT=$FCC_ORNITH_PORT fcc-claude --model "ornith-1.0-9b-Q5_K_M.gguf" \
+    --append-system-prompt-file "$HOME/.claude/contexts/local-agent.md" "$@"
 }
 
 # ── ccqwen — Claude Code with Qwen3.6-27B MTP (local) ─────────────
@@ -60,7 +64,19 @@ ccornith() {
 ccqwen() {
   _ensure_qwen_server
   _ensure_qwen_fcc_proxy
-  PORT=$FCC_QWEN_PORT fcc-claude --model "qwen3.6-27b-mtp-Q3_K_S.gguf" "$@"
+  CLAUDE_LOCAL_MODEL=1 CLAUDE_LOCAL_MODEL_PORT=8080 \
+  PORT=$FCC_QWEN_PORT fcc-claude --model "qwen3.6-27b-mtp-Q3_K_S.gguf" \
+    --append-system-prompt-file "$HOME/.claude/contexts/local-agent.md" "$@"
+}
+
+# ── ccqwopus — Claude Code with Qwopus 35B Nano (local MTP) ─────────
+# Benchmarks (RTX 5080, turboquant build): pp8192=6135 t/s, tg128=165 t/s
+ccqwopus() {
+  _ensure_qwopus_server
+  _ensure_qwopus_fcc_proxy
+  CLAUDE_LOCAL_MODEL=1 CLAUDE_LOCAL_MODEL_PORT=8083 \
+  PORT=$FCC_QWOPUS_PORT fcc-claude --model "Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Nano.gguf" \
+    --append-system-prompt-file "$HOME/.claude/contexts/local-agent.md" "$@"
 }
 
 # Legacy alias
@@ -72,6 +88,17 @@ ccstop() {
   [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Ornith FCC proxy stopped"
   pid=$(lsof -ti :$FCC_QWEN_PORT 2>/dev/null)
   [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Qwen FCC proxy stopped"
+  pid=$(lsof -ti :$FCC_QWOPUS_PORT 2>/dev/null)
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Qwopus FCC proxy stopped"
+  # Kill all llama-servers
+  pid=$(lsof -ti :8080 2>/dev/null | head -1)
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Qwen llama-server stopped"
+  pid=$(lsof -ti :8082 2>/dev/null | head -1)
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Ornith llama-server stopped"
+  pid=$(lsof -ti :8083 2>/dev/null | head -1)
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Qwopus llama-server stopped"
+  pid=$(lsof -ti :$HERMES_GEMMA_PORT 2>/dev/null | head -1)
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Gemma 4 llama-server stopped"
 }
 
 # ── Server helpers ─────────────────────────────────────────────────
@@ -124,23 +151,27 @@ _ensure_qwen_server() {
     echo "Qwen server still not ready after 60s" >&2
     return 1
   fi
-  # Only one model fits in VRAM — kill Ornith if running
+  # Only one model fits in VRAM — kill Ornith/Qwopus if running
   if lsof -i :8082 >/dev/null 2>&1; then
     echo "Stopping Ornith server to free VRAM..." >&2
     kill $(lsof -ti :8082) 2>/dev/null
     sleep 2
   fi
+  if lsof -i :8083 >/dev/null 2>&1; then
+    echo "Stopping Qwopus server to free VRAM..." >&2
+    kill $(lsof -ti :8083) 2>/dev/null
+    sleep 2
+  fi
   echo "Starting Qwen3.6-27B MTP server on :8080..."
   export LD_LIBRARY_PATH="$HOME/.local/cuda-12.8/lib64:$LD_LIBRARY_PATH"
-  nohup "$HOME/llama.cpp/build/bin/llama-server" \
+  nohup "$HOME/llama-cpp-turboquant/build-turbo/bin/llama-server" \
     -m "$QWEN_MODEL" \
-    -ngl 99 -t 8 -c 200000 --port 8080 --host 127.0.0.1 \
-    --no-kv-offload \
+    -t 4 -c 200000 --port 8080 --host 127.0.0.1 \
     --temp 0.7 --top-p 0.95 --top-k 40 \
     --spec-type draft-mtp --spec-draft-n-max 2 \
     --flash-attn on \
-    --cache-type-k q4_0 --cache-type-v q4_0 \
-    -np 2 --cache-reuse 256 \
+    -ctk q8_0 -ctv turbo3 \
+    -np 1 \
     > /tmp/qwen-server.log 2>&1 & disown
   for i in $(seq 1 45); do
     if curl -s http://127.0.0.1:8080/v1/models >/dev/null 2>&1; then
@@ -149,6 +180,50 @@ _ensure_qwen_server() {
     sleep 2
   done
   echo "Qwen server failed to start within 90s — check /tmp/qwen-server.log" >&2
+  return 1
+}
+
+_ensure_qwopus_server() {
+  if lsof -i :8083 >/dev/null 2>&1; then
+    curl -s http://127.0.0.1:8083/v1/models >/dev/null 2>&1 && return 0
+    echo "Qwopus server running but not ready — waiting..." >&2
+    for i in $(seq 1 30); do
+      curl -s http://127.0.0.1:8083/v1/models >/dev/null 2>&1 && return 0
+      sleep 2
+    done
+    echo "Qwopus server still not ready after 60s" >&2
+    return 1
+  fi
+  if lsof -i :8082 >/dev/null 2>&1; then
+    echo "Stopping Ornith server to free VRAM..." >&2
+    kill $(lsof -ti :8082) 2>/dev/null
+    sleep 2
+  fi
+  if lsof -i :8080 >/dev/null 2>&1; then
+    echo "Stopping Qwen server to free VRAM..." >&2
+    kill $(lsof -ti :8080) 2>/dev/null
+    sleep 2
+  fi
+  echo "Starting Qwopus 35B Nano server on :8083..."
+  export LD_LIBRARY_PATH="$HOME/.local/cuda-12.8/lib64:$LD_LIBRARY_PATH"
+  nohup "$HOME/llama-cpp-turboquant/build-turbo/bin/llama-server" \
+    -m "$QWOPUS_MODEL" \
+    -ngl 99 -t 8 -c 131072 --port 8083 --host 127.0.0.1 \
+    --temp 0.6 --top-p 0.95 --top-k 20 \
+    --repeat-penalty 1.1 --dry-multiplier 0.5 --dry-allowed-length 3 --dry-penalty-last-n 4096 \
+    -ub 4096 -b 4096 --cache-reuse 256 \
+    --flash-attn on \
+    -ctk q8_0 -ctv turbo3 \
+    --reasoning-budget 2048 \
+    -np 1 -fit off \
+    > /tmp/qwopus-server.log 2>&1 & disown
+  for i in $(seq 1 25); do
+    if curl -s http://127.0.0.1:8083/v1/models >/dev/null 2>&1; then
+      echo "Qwopus server ready (${i}s)"; return 0
+    fi
+    sleep 2
+  done
+  echo "Qwopus server failed to start within 50s" >&2
   return 1
 }
 
@@ -179,6 +254,21 @@ _ensure_qwen_fcc_proxy() {
   for i in $(seq 1 10); do
     if curl -s http://127.0.0.1:$FCC_QWEN_PORT/health >/dev/null 2>&1; then
       echo "FCC Qwen proxy ready (${i}s)"; break
+    fi
+    sleep 1
+  done
+}
+
+_ensure_qwopus_fcc_proxy() {
+  if lsof -i :$FCC_QWOPUS_PORT >/dev/null 2>&1; then return 0; fi
+  echo "Starting FCC proxy for Qwopus on :$FCC_QWOPUS_PORT..."
+  PORT=$FCC_QWOPUS_PORT LLAMACPP_BASE_URL="http://127.0.0.1:8083/v1" \
+    MODEL="llamacpp/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Nano.gguf" \
+    ENABLE_WEB_SERVER_TOOLS=true FCC_AUTO_INTERCEPT_WEB_TOOLS=true \
+    nohup fcc-server > /tmp/fcc-qwopus.log 2>&1 & disown
+  for i in $(seq 1 10); do
+    if curl -s http://127.0.0.1:$FCC_QWOPUS_PORT/health >/dev/null 2>&1; then
+      echo "FCC Qwopus proxy ready (${i}s)"; break
     fi
     sleep 1
   done
@@ -238,6 +328,72 @@ if command -v compdef >/dev/null 2>&1; then
   }
   compdef _code_model code
 fi
+
+# ── Hermes Agent Aliases ──────────────────────────────────────────
+# Profiles created via `hermes profile create` + `hermes profile alias`
+# Wrapper scripts: /home/barrak/.local/bin/{ornith,qwopus,gemma4,deepseek}
+
+HERMES_GEMMA_PORT="${HERMES_GEMMA_PORT:-8084}"
+GEMMA4_MODEL="$HOME/models/gemma4-4b/gemma-4-E4B-it-Q4_K_M.gguf"
+
+hermes-ornith() {
+  _ensure_ornith_server
+  /home/barrak/.local/bin/ornith "$@"
+}
+
+hermes-qwopus() {
+  _ensure_qwopus_server
+  /home/barrak/.local/bin/qwopus "$@"
+}
+
+hermes-gemma() {
+  _ensure_gemma_server
+  /home/barrak/.local/bin/gemma4 "$@"
+}
+
+hermes-ds() {
+  local key
+  key=$(grep -E '^DEEPSEEK_API_KEY=' "$HOME/Development/local-llms/.env" 2>/dev/null | sed 's/^DEEPSEEK_API_KEY=//')
+  if [ -z "$key" ]; then
+    echo "Error: DEEPSEEK_API_KEY not set in ~/Development/local-llms/.env" >&2
+    return 1
+  fi
+  export DEEPSEEK_API_KEY="$key"
+  /home/barrak/.local/bin/deepseek "$@"
+}
+
+# ── Gemma 4 E4B server (3 GB, fits alongside other models) ──────
+
+_ensure_gemma_server() {
+  if lsof -i :$HERMES_GEMMA_PORT >/dev/null 2>&1; then
+    curl -s http://127.0.0.1:$HERMES_GEMMA_PORT/v1/models >/dev/null 2>&1 && return 0
+    echo "Gemma 4 server running but not ready — waiting..." >&2
+    for i in $(seq 1 10); do
+      curl -s http://127.0.0.1:$HERMES_GEMMA_PORT/v1/models >/dev/null 2>&1 && return 0
+      sleep 2
+    done
+    return 1
+  fi
+  # Gemma 4 E4B is only ~3 GB — no need to kill other servers
+  echo "Starting Gemma 4 E4B server on :$HERMES_GEMMA_PORT..."
+  export LD_LIBRARY_PATH="$HOME/.local/cuda-12.8/lib64:$LD_LIBRARY_PATH"
+  nohup "$HOME/llama.cpp/build/bin/llama-server" \
+    -m "$GEMMA4_MODEL" \
+    --chat-template gemma \
+    -ngl 99 -t 8 -c 32768 --port $HERMES_GEMMA_PORT --host 127.0.0.1 \
+    --temp 0.7 --top-p 0.95 \
+    -ub 2048 -b 2048 --cache-reuse 256 \
+    -np 2 \
+    > /tmp/gemma4-server.log 2>&1 & disown
+  for i in $(seq 1 15); do
+    if curl -s http://127.0.0.1:$HERMES_GEMMA_PORT/v1/models >/dev/null 2>&1; then
+      echo "Gemma 4 server ready (${i}s)"; return 0
+    fi
+    sleep 2
+  done
+  echo "Gemma 4 server failed to start within 30s" >&2
+  return 1
+}
 
 # ── yt-transcript shortcut ────────────────────────────────────────
 alias yt-transcript="$HOME/Development/local-llms/yt-transcript"

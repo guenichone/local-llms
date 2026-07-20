@@ -1,0 +1,4 @@
+- Read partial files with offset/limit. Use LSP for navigation. Never dump full files.
+- Be concise. Don't explain code unless asked.
+- No subagents or task delegation.
+- Never expose secrets or keys in output.

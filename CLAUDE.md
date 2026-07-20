@@ -1,23 +1,46 @@
 # Local LLMs Setup (WSL2 + RTX 5080)
 
+## Repo Map
+
+This repo is split into three indexes — use the right one for what you need:
+
+| File | Purpose | When to use |
+|---|---|---|
+| **[ALIASES.md](./ALIASES.md)** | Every alias, hook, prompt, server port, env var | "How do I launch X?" / "What port is Y on?" / "Where's the hook script?" |
+| **[REFERENCES.md](./REFERENCES.md)** | External sources (papers, videos, blog posts, PRs, repos, models) | "Where did we learn about Bonsai?" / "What was that Codacus video?" |
+| **CLAUDE.md** (this file) | Operational knowledge: benchmarks, bugs, build instructions, model configs | "What's the best quant for Ornith?" / "How to rebuild llama.cpp?" / "Why is CUDA 13.3 broken?" |
+
+Other tracked files:
+
+| Path | What |
+|---|---|
+| [`patches/providers.zsh`](./patches/providers.zsh) | Shell aliases & server helpers (symlink to `~/.zshrc.d/`) |
+| [`opencode.json`](./opencode.json) | OpenCode provider/model config (active, read by OpenCode) |
+| [`agents/claude-code/`](./agents/claude-code/) | Claude Code reference files (hooks, prompts, settings — copy to install) |
+| [`agents/hermes/profiles/`](./agents/hermes/profiles/) | Reference copies of Hermes Agent profile configs |
+
 ## Quick Reference
 
 ```bash
 # ── Claude Code ──
 claude-or                          # Opus 4.8 via OpenRouter ($)
 claude-or-sonnet                   # Sonnet 5 via OpenRouter
-  ccornith                        # Ornith Q5 (local, free, ~30s delay)
-  ccqwen                           # Qwen3.6-27B MTP (local)
+ccornith                           # Ornith Q5 (local, free, ~30s delay)
+ccqwen                             # Qwen3.6-27B MTP (local)
+ccqwopus                           # Qwopus 35B Nano (local)
+ccstop                             # Kill all servers + proxies
 
 # ── OpenCode ──
-code ds                            # DeepSeek V4 Flash
+code                               # TUI model picker
+code ds                            # DeepSeek V4 Flash (OpenRouter)
 code ornith                        # Ornith Q5 (local llama.cpp)
 code local                         # Qwen3.6-27B MTP (local)
 
-# ── Ornith server ──
-ccornith                           # auto-starts server + proxy
-ccqwen                             # auto-starts Qwen server + proxy
-llama-server ...                   # or manual: see Server Commands below
+# ── Hermes Agent ──
+hermes-ornith                      # Ornith Q5 (local)
+hermes-qwopus                      # Qwopus 35B Nano (local)
+hermes-gemma                       # Gemma 4 E4B (local)
+hermes-ds                          # DeepSeek V4 Pro (remote)
 
 # ── Utilities ──
 yt-transcript <video-id>           # YouTube transcript
@@ -280,18 +303,32 @@ Flag details:
 | `--reasoning-budget N` | Cap thinking tokens (default -1 = unlimited; 2048 recommended) |
 | `enableAgentSafetyClassifier` | Set `false` in `~/.claude/settings.json` to disable the safety classifier (circumvents timeout with slow local models) |
 
-#### Qwen3.6-27B MTP (port 8080)
+#### Qwen3.6-27B MTP — Turboquant build (port 8080)
 
 ```bash
+# Uses turboquant build with turbo3 KV cache to fit 200K ctx on single 5080
 export LD_LIBRARY_PATH=$HOME/.local/cuda-12.8/lib64:$LD_LIBRARY_PATH
-llama-server \
+$HOME/llama-cpp-turboquant/build-turbo/bin/llama-server \
   -m ~/models/qwen3.6-27b-mtp-Q3_K_S.gguf \
-  -ngl 99 -t 8 -c 200000 --no-kv-offload --port 8080 --host 127.0.0.1 \
+  -t 4 -c 200000 --port 8080 --host 127.0.0.1 \
+  --temp 0.7 --top-p 0.95 --top-k 40 \
   --spec-type draft-mtp --spec-draft-n-max 2 \
   --flash-attn on \
-  --cache-type-k q4_0 --cache-type-v q4_0 \
+  -ctk q8_0 -ctv turbo3 \
   -np 1
 ```
+
+Key: `--fit on` (default in turboquant build) auto-determines GPU layer distribution. `-np 1` gives the single slot full 200K context (no splitting). `--cache-reuse` is disabled by MTP — no point adding it. `-t 4` is optimal for generation speed.
+
+**Context/speed tradeoff** (turboquant build, turbo3 KV, single 5080):
+
+| Context | KV cache type | Speed | VRAM used |
+|---|---|---|---|
+| 55K | q4_0 (vanilla build) | ~60 t/s | ~15 GB |
+| 131K | turbo3 | ~17 t/s | ~15 GB |
+| **200K** | **turbo3** | **~10 t/s** | **~14.6 GB** |
+
+turbo3 compresses the KV cache (not the model), enabling 200K context on a single 16 GB GPU. Speed drops at larger contexts because attention must scan more KV entries per token. MTP adds ~700 MB VRAM overhead.
 
 ### CLI Commands (llama-cli)
 
@@ -372,7 +409,11 @@ Ornith is [officially listed](https://codersera.com/blog/how-to-run-ornith-1-0-l
 | Ornith 9B Q5_K_M | 6 | off | 5,243 | 125.2 | FA gives +15% pp |
 | Qwen 27B Q3_K_S | 8 | on | 1,692 | 47.4 | Best pp at t=8 |
 | Qwen 27B Q3_K_S | 4 | on | 1,611 | 48.3 | Best tg at t=4 |
-| Qwen 27B Q3_K_S + MTP | 8 | on | — | **~96** | MTP ≈2x decode (llama-bench can't test) |
+| Qwen 27B Q3_K_S + MTP | 4 | on | — | **~60** | turboquant, turbo3 KV, 55K ctx (measured Jul 20) |
+| Qwen 27B Q3_K_S + MTP | 4 | on | — | **~17** | turboquant, turbo3 KV, 131K ctx |
+| Qwen 27B Q3_K_S + MTP | 4 | on | — | **~10** | turboquant, turbo3 KV, 200K ctx |
+
+Note: The old ~96 t/s MTP estimate was from small-context benchmarking. Real server speed at depth is 10-60 t/s depending on context size. `--no-kv-offload` caused 3.2x slowdown (48→15 t/s) — avoid it.
 
 ### Patched build (fable5-optimizations)
 
@@ -452,7 +493,7 @@ All on CUDA 12.8 with flash-attn, KV cache q4_0:
 - **Session model path warning** — Claude Code warns `unknown session model` when session history `.jsonl` in `~/.claude/projects/` contains full GGUF paths. Fix: `sed -i 's|/home/barrak/models/ornith-1\.0-9b/ornith-1\.0-9b-Q5_K_M\.gguf|ornith-1.0-9b-Q5_K_M.gguf|g' ~/.claude/projects/*.jsonl`
 - **Fable5 patched build breaks without `GGML_CUDA_REGISTER_HOST=1`** — decode speed collapses from ~125 t/s to <2 t/s on fully GPU-resident models. Always export this env var when using the patched build.
 - **Only one model fits in VRAM** — Qwen 27B (12 GB) + Ornith 9B (6 GB) = 18 GB > 16 GB. `ccornith`/`ccqwen` auto-kill the other server on switch.
-- **Qwen 27B with 200K context requires `--no-kv-offload`** — KV cache (~10 GB at 200K) must stay in system RAM (DDR5 7200 bandwidth is sufficient). Without it, max usable context is ~65K on 16 GB VRAM.
+- **Qwen 27B config** — Uses turboquant build with `-ctk q8_0 -ctv turbo3` for 200K context on single 5080. `--no-kv-offload` causes 3.2x slowdown — avoid it. Vanilla build limited to ~55K ctx without turbo3. `--cache-reuse` is disabled by MTP.
 - **FCC proxy model display** — Remove `"model"` from `~/.claude/settings.json` to let each alias report its own model name via `--model` flag.
 - **Qwen server crash: "cache size limit reached"** — With `--no-kv-offload` and heavy Claude Code usage, the prompt cache fills up and the eviction logic races with new task launches, crashing the server. Fix: `-np 1` (single slot avoids cache pressure from concurrent requests). Also `--cache-reuse 256` is disabled with MTP speculative decoding.
 - **Qwopus server memory fitter hang** — The MTP variant GGUF hangs during `fitting params to device memory`. Fix: `-fit off` in the server command.
@@ -533,16 +574,17 @@ Qwopus = Qwen3.6-35B-A3B fine-tuned on Opus reasoning traces (Jackrong). Publish
 -m ~/models/qwopus/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Nano.gguf \
 -ngl 99 -t 8 -c 131072 --port 8083 --host 127.0.0.1 \
 --temp 0.6 --top-p 0.95 --top-k 20 \
+--repeat-penalty 1.1 --dry-multiplier 0.5 --dry-allowed-length 3 --dry-penalty-last-n 4096 \
 -ub 4096 -b 4096 --cache-reuse 256 \
 --flash-attn on \
 -ctk q8_0 -ctv turbo3 \
---reasoning-budget 2048 --reasoning-preserve \
--np 2 -fit off
+--reasoning-budget 2048 \
+-np 1 -fit off
 ```
 
-Key: `-fit off` required to bypass memory fitter hang on MTP model variant. `--reasoning-budget 2048` prevents thinking from consuming entire token budget.
+Key: `-fit off` required to bypass memory fitter hang on MTP model variant. `--reasoning-budget 2048` prevents thinking from consuming entire token budget. `--repeat-penalty` + `--dry-multiplier` prevent repetition loops at high context. `--reasoning-preserve` removed (not supported by turboquant). `-np 1` gives single slot full 131K context.
 
-MTP speculative decoding costs 1.6 GB VRAM — cannot use with 131K ctx on 16 GB. Bench showed 165 t/s without MTP anyway.
+MTP speculative decoding costs ~700 MB VRAM — cannot use with 131K ctx on 16 GB. Bench showed 165 t/s without MTP anyway.
 
 ## Complete Benchmarks — RTX 5080 16 GB (Jul 2026)
 
@@ -559,7 +601,8 @@ All benches: turboquant build, turbo3 KV unless noted. FA = flash-attn.
 | Gemma 4 26B Nano FA off | 8.8 GB | 7797 | 138.6 | ✗ | 200K | — | — |
 | Gemma 4 26B Nano FA on | 8.8 GB | 6842 | 168.7 | ✓ | 200K | — | — |
 | Qwen3.6 35B Mini ngl=30 | 13.3 GB | 2707 | 16.7 | ✓ | ~130K | 73.4% | 52.5% |
-| Qwen3.6 27B MTP Q3 | 12.0 GB | ~1700 | ~47 | ✓ | 200K | ~68% | ~48% |
+| Qwen3.6 27B MTP Q3 turbo3 | 12.0 GB | — | ~17 | ✓ | 131K | ~68% | ~48% |
+| Qwen3.6 27B MTP Q3 turbo3 | 12.0 GB | — | ~10 | ✓ | 200K | ~68% | ~48% |
 
 ### Winners
 
@@ -569,7 +612,8 @@ All benches: turboquant build, turbo3 KV unless noted. FA = flash-attn.
 | **Quality all-round** | Qwopus 35B Nano | 165 t/s, 131K, ~75% SWE, Opus reasoning |
 | **Dark horse** | Gemma 4 26B Nano | 8.8 GB, 200K, 7797 pp, no SWE scores yet |
 | **Best quality** | Ornith 35B Mini | 75.6% SWE but only 60K ctx — agent-starved |
-| **Dead** | TQ4_1S, Qwen 27B, any partial-offload MoE | |
+| **High-ctx dense** | Qwen 27B MTP turbo3 | 200K ctx on single 5080, 10-17 t/s, concise output |
+| **Dead** | TQ4_1S, any partial-offload MoE | |
 
 ## New Shell Commands
 
@@ -589,11 +633,12 @@ export LD_LIBRARY_PATH=$HOME/.local/cuda-12.8/lib64:$LD_LIBRARY_PATH
   -m ~/models/qwopus/Qwopus3.6-35B-A3B-v1-APEX-MTP-I-Nano.gguf \
   -ngl 99 -t 8 -c 131072 --port 8083 --host 127.0.0.1 \
   --temp 0.6 --top-p 0.95 --top-k 20 \
+  --repeat-penalty 1.1 --dry-multiplier 0.5 --dry-allowed-length 3 --dry-penalty-last-n 4096 \
   -ub 4096 -b 4096 --cache-reuse 256 \
   --flash-attn on \
   -ctk q8_0 -ctv turbo3 \
-  --reasoning-budget 2048 --reasoning-preserve \
-  -np 2 -fit off
+  --reasoning-budget 2048 \
+  -np 1 -fit off
 
 # FCC proxy
 PORT=8100 LLAMACPP_BASE_URL="http://127.0.0.1:8083/v1" \
@@ -601,3 +646,15 @@ PORT=8100 LLAMACPP_BASE_URL="http://127.0.0.1:8083/v1" \
   ENABLE_WEB_SERVER_TOOLS=true FCC_AUTO_INTERCEPT_WEB_TOOLS=true \
   fcc-server > /tmp/fcc-qwopus.log 2>&1 & disown
 ```
+
+## Multi-GPU Inference
+
+llama.cpp supports splitting models across multiple GPUs via tensor split (`-sm tensor`). The `--fit on` flag (default in recent builds) auto-determines optimal layer distribution and tensor splits.
+
+**For our setup (RTX 5080 16 GB + hypothetical 12 GB GPU = 28 GB):**
+- Qwen 27B at 200K would fit (12 GB model + ~15 GB KV cache = 27 GB)
+- But **PCIe bandwidth kills speed** for dense models: tested 2x 4090 on Qwen Next showed only +17% speed for 2x hardware
+- The slower GPU becomes the bottleneck for any tensor spanning both cards
+- For MoE models, multi-GPU is more viable since expert layers can be placed on different GPUs with minimal cross-talk
+
+**Bottom line:** turbo3 KV cache compression on a single 5080 is better than adding a second GPU for our use case. 200K context already fits with turbo3.
