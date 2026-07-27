@@ -27,6 +27,9 @@ Other tracked files:
 # ── Claude Code ──
 claude-or                          # Opus 4.8 via OpenRouter ($)
 claude-or-sonnet                   # Sonnet 5 via OpenRouter
+claude-go                          # Claude Haiku → DeepSeek Flash ($10/mo)
+claude-go-sonnet                   # Claude Sonnet → DeepSeek V4 Pro
+claude-go-opus                     # Claude Opus  → Kimi K3
 ccornith                           # Ornith Q5 (local, free, ~30s delay)
 ccqwen                             # Qwen3.6-27B MTP (local)
 ccqwopus                           # Qwopus 35B Nano (local)
@@ -43,6 +46,7 @@ hermes-ornith                      # Ornith Q5 (local)
 hermes-qwopus                      # Qwopus 35B Nano (local)
 hermes-gemma                       # Gemma 4 E4B (local)
 hermes-ds                          # DeepSeek V4 Pro (remote)
+hermes-go                          # DeepSeek V4 Flash via OpenCode Go ($10/mo)
 
 # ── Utilities ──
 yt-transcript <video-id>           # YouTube transcript
@@ -399,6 +403,14 @@ hermes config set model /home/barrak/models/ornith-1.0-9b/ornith-1.0-9b-Q5_K_M.g
 ```
 
 Ornith is [officially listed](https://codersera.com/blog/how-to-run-ornith-1-0-locally-2026/) as a tested harness for Hermes Agent.
+
+#### OpenCode Go (subscription)
+
+```bash
+hermes-go                          # DeepSeek V4 Flash via OpenCode Go ($10/mo)
+```
+
+Uses `provider: openai` pointing at `https://opencode.ai/zen/go/v1`. Requires `OPENCODE_GO_API_KEY` in `.env`. Same subscription as `claude-go`.
 
 ## Performance (RTX 5080)
 

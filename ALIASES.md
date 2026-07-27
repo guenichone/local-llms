@@ -18,7 +18,11 @@ claude-or-qwen              # Qwen 3.6 27B via OpenRouter
 claude-or-qwf               # Qwen 3.6 Flash via OpenRouter
 claude-or-glm               # GLM 5.2 via OpenRouter
 claude-or-gemini            # Gemini 2.5 Flash via OpenRouter
-claude-go                   # DeepSeek via OpenCode Go ($10/mo: Flash default, Pro via arg)
+claude-go                   # Claude Haiku → DeepSeek Flash ($10/mo)
+claude-go-sonnet            # Claude Sonnet → DeepSeek V4 Pro
+claude-go-opus              # Claude Opus  → Kimi K3
+claude-go-dash              # Open monitoring dashboard
+claude-go-stop              # kill proxy
 ccornith                    # Ornith Q5 (local, free)
 ccqwen                      # Qwen3.6-27B MTP (local)
 ccqwopus                    # Qwopus 35B Nano (local)
@@ -42,6 +46,8 @@ hermes-ornith               # Ornith Q5 (local)
 hermes-qwopus               # Qwopus 35B Nano (local)
 hermes-gemma                # Gemma 4 E4B (local)
 hermes-ds                   # DeepSeek V4 Pro (remote)
+hermes-go                   # DeepSeek V4 Flash via OpenCode Go ($10/mo)
+hermes-bi                   # Bifrost gateway (model picker, routes to any backend)
 
 # Utilities
 yt-transcript <url>         # YouTube transcript + metadata
@@ -87,7 +93,7 @@ Results stored in `benchmarks/master_results.json` and `benchmarks/models/<model
 | 8084 | Gemma 4 E4B Q4_K_M | 3 GB | 32K | vanilla llama.cpp | `hermes-gemma` |
 
 | 8099 | OR proxy (OpenRouter) | — | — | node | `claude-or*` |
-| 8787 | Go proxy (OpenCode Go) | — | — | node (mothieras) | `claude-go*` |
+| 8787 | Go proxy (OpenCode Go) | — | — | node (mothieras) | `claude-go*`, dashboard at `/` |
 
 FCC proxy ports: 8097 (Ornith), 8098 (Qwen), 8100 (Qwopus).
 OpenRouter proxy port: 8099.
@@ -170,22 +176,39 @@ Uses [mothieras/opencode-claude-proxy](https://github.com/mothieras/opencode-cla
 2. Copy API key → add to `.env`: `OPENCODE_GO_API_KEY=sk-...`
 3. Run `claude-go "test"` — auto-starts proxy, injects key from .env
 
-### Models (2 available)
+### Three-Tier Claude Model Mapping
 
-| Model | Requests/month | Best for |
-|---|---|---|
-| `deepseek-v4-flash` | ~31K | Default — best value, fast |
-| `deepseek-v4-pro` | ~17K | Smarter reasoning |
+The proxy alias system maps Claude model names to upstream models. Claude Code sees the Claude-tier names in its `/model` picker; the proxy resolves them server-side:
+
+| Claude Tier | Proxy Model | Upstream Model | Best For |
+|---|---|---|---|
+| Haiku (default) | `claude-haiku-4.5` | `deepseek-v4-flash` | Fast, cheap, daily tasks |
+| Sonnet | `claude-sonnet-5` | `deepseek-v4-pro` | Balanced, structured output |
+| Opus | `claude-opus-4-8` | `kimi-k3` | Complex reasoning |
+
+All 22 upstream models remain accessible directly (e.g., `claude-go qwen3.7-max`, `claude-go grok-4.5`).
 
 ### Usage
 
 ```bash
-claude-go "write fibonacci"              # DeepSeek Flash (default)
-claude-go deepseek-v4-pro "refactor"    # DeepSeek Pro
+claude-go "write fibonacci"              # Claude Haiku → DeepSeek Flash (default)
+claude-go deepseek-v4-pro "refactor"    # Direct model access
+claude-go-sonnet                         # Claude Sonnet → DeepSeek V4 Pro
+claude-go-opus                           # Claude Opus  → Kimi K3
 claude-go-stop                           # kill proxy
 ```
 
 **Cost:** $10/month flat, no per-token charges. Limits: 5hr/$12, weekly/$30, monthly/$60.
+
+### Monitoring Dashboard
+
+Visit `http://127.0.0.1:8787` (or run `claude-go-dash`) for a real-time monitoring dashboard showing:
+- Live request count, error rate, total tokens
+- Per-model breakdown (requests, prompt/gen tokens, averages)
+- Alias routing table (which Claude model → which upstream model)
+- Recent request log with model routing, token usage, latency, and status
+
+The dashboard auto-refreshes every second. The JSON API is at `/stats`.
 
 ---
 
@@ -199,17 +222,21 @@ Defined in [`patches/providers.zsh`](./patches/providers.zsh). Each alias invoke
 | `hermes-qwopus` | `qwopus` | Qwopus 35B Nano | custom (llama.cpp) | :8083 |
 | `hermes-gemma` | `gemma4` | Gemma 4 E4B | custom (llama.cpp) | :8084 |
 | `hermes-ds` | `deepseek-v4-pro` | DeepSeek V4 Pro | deepseek (built-in) | remote |
+| `hermes-go` | `opencode-go` | DeepSeek V4 Flash | openai (OpenCode Go) | cloud |
+| `hermes-bi` | `bifrost` | model picker (Bifrost) | custom (Bifrost) | :8085 |
 
-Profiles live in `~/.hermes/profiles/<name>/`. Wrappers in `~/.local/bin/{ornith,qwopus,gemma4,deepseek}`.
+Profiles live in `~/.hermes/profiles/<name>/`. Wrappers in `~/.local/bin/{ornith,qwopus,gemma4,deepseek,opencode-go}`.
 
 ### Hermes Profile Configs (reference)
 
 ```
 ~/.hermes/profiles/
-  ornith/          provider: custom,  base_url: :8082,  ctx: 200K,   max_tok: 8192
-  qwopus/          provider: custom,  base_url: :8083,  ctx: 131K,   max_tok: 8192
-  gemma4/          provider: custom,  base_url: :8084,  ctx: 32K,    max_tok: 4096
+  ornith/          provider: custom,  base_url: :8082,    ctx: 200K,   max_tok: 8192
+  qwopus/          provider: custom,  base_url: :8083,    ctx: 131K,   max_tok: 8192
+  gemma4/          provider: custom,  base_url: :8084,    ctx: 32K,    max_tok: 4096
   deepseek-v4-pro/ provider: deepseek                     ctx: 1M,     max_tok: 65536
+  opencode-go/     provider: openai,  base_url: zen/go,  ctx: 128K,   max_tok: 8192
+  bifrost/         provider: custom,  base_url: :8085,    ctx: 128K,   max_tok: 8192
 ```
 
 Local profiles use `api_key: not-needed`. DeepSeek uses the built-in `deepseek` provider (reads `DEEPSEEK_API_KEY` from env/profile `.env`).

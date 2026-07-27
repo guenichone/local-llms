@@ -48,25 +48,34 @@ GO_PROXY_PORT="${GO_PROXY_PORT:-8787}"
 GO_PROXY_DIR="$HOME/Development/ai/local-llms/.claude/opencode-claude-proxy"
 
 claude-go() {
-  local model="${1:-deepseek-v4-flash}"
-  # Normalize model aliases
-  case "$model" in
-    ds-pro|dsp|deepseek-v4-pro)    model="deepseek-v4-pro" ;;
-    ds-flash|dsf|ds|flash)         model="deepseek-v4-flash" ;;
-    kimi|kimi-k3)                  model="kimi-k3" ;;
-    kimi-27c|kimi-k2.7-code)       model="kimi-k2.7-code" ;;
-    kimi-26|kimi-k2.6)             model="kimi-k2.6" ;;
-    glm|glm-5.2|glm52)             model="glm-5.2" ;;
-    glm51|glm-5.1)                 model="glm-5.1" ;;
-    qwen|qwen3.7|qwen37)           model="qwen3.7-max" ;;
-    qwen36|qwen3.6)                model="qwen3.6-plus" ;;
-    grok|grok-4.5)                 model="grok-4.5" ;;
-    hy3|hy3-preview)               model="hy3-preview" ;;
-    minimax|minimax-m3)            model="minimax-m3" ;;
-    models|list|status)            _claude_go_models; return ;;
-    help|-h|--help)                _claude_go_help; return ;;
+  local model="${1:-claude-haiku-4.5}"
+  # If first arg is a claude flag, pass everything through
+  case "$1" in
+    -c|--continue|--resume|-p|--print|--help|-h) model="claude-haiku-4.5" ;;
+    *)
+      shift 2>/dev/null || true
+      # Normalize model aliases
+      case "$model" in
+        haiku|claude-haiku-4.5)        model="claude-haiku-4.5" ;;
+        sonnet|claude-sonnet-5)        model="claude-sonnet-5" ;;
+        opus|claude-opus-4-8)          model="claude-opus-4-8" ;;
+        ds-pro|dsp|deepseek-v4-pro)    model="deepseek-v4-pro" ;;
+        ds-flash|dsf|ds|flash)         model="deepseek-v4-flash" ;;
+        kimi|kimi-k3)                  model="kimi-k3" ;;
+        kimi-27c|kimi-k2.7-code)       model="kimi-k2.7-code" ;;
+        kimi-26|kimi-k2.6)             model="kimi-k2.6" ;;
+        glm|glm-5.2|glm52)             model="glm-5.2" ;;
+        glm51|glm-5.1)                 model="glm-5.1" ;;
+        qwen|qwen3.7|qwen37)           model="qwen3.7-max" ;;
+        qwen36|qwen3.6)                model="qwen3.6-plus" ;;
+        grok|grok-4.5)                 model="grok-4.5" ;;
+        hy3|hy3-preview)               model="hy3-preview" ;;
+        minimax|minimax-m3)            model="minimax-m3" ;;
+        models|list|status)            _claude_go_models; return ;;
+        help|-h|--help)                _claude_go_help; return ;;
+      esac
+      ;;
   esac
-  shift 2>/dev/null || true
 
   # Ensure API key is in settings.json
   local settings="$GO_PROXY_DIR/settings.json"
@@ -123,10 +132,17 @@ with open('$settings', 'w') as f: json.dump(s, f, indent=2)
 # Convenience aliases
 claude-go-pro()    { claude-go "deepseek-v4-pro" "$@"; }
 claude-go-flash()  { claude-go "deepseek-v4-flash" "$@"; }
+claude-go-opus()   { claude-go "claude-opus-4-8" "$@"; }
+claude-go-sonnet() { claude-go "claude-sonnet-5" "$@"; }
+claude-go-haiku()  { claude-go "claude-haiku-4.5" "$@"; }
 claude-go-kimi()   { claude-go "kimi-k3" "$@"; }
 claude-go-glm()    { claude-go "glm-5.2" "$@"; }
 claude-go-qwen()   { claude-go "qwen3.7-max" "$@"; }
 claude-go-grok()   { claude-go "grok-4.5" "$@"; }
+claude-go-dash()   {
+  echo "Opening Go proxy dashboard at http://127.0.0.1:8787"
+  xdg-open http://127.0.0.1:8787 2>/dev/null || echo "Visit: http://127.0.0.1:8787"
+}
 
 # Show available models from the running proxy
 _claude_go_models() {
@@ -145,7 +161,7 @@ for m in data.get('data', []):
 " 2>/dev/null
   echo ""
   echo "Usage: claude-go <model-name>"
-  echo "Aliases: claude-go-pro, claude-go-flash, claude-go-kimi, claude-go-glm, claude-go-qwen, claude-go-grok"
+  echo "Aliases: claude-go-haiku, claude-go-sonnet, claude-go-opus, claude-go-pro, claude-go-flash, claude-go-kimi, claude-go-glm, claude-go-qwen, claude-go-grok"
 }
 
 # Kill the Go proxy
@@ -162,19 +178,27 @@ _claude_go_help() {
   echo "Usage:"
   echo "  claude-go [model]    Start Claude Code with the given model"
   echo "  claude-go models     List available models"
+  echo "  claude-go dash       Open monitoring dashboard"
   echo "  claude-go stop       Stop the proxy"
   echo "  claude-go help       This help"
   echo ""
-  echo "Convenience aliases:"
+  echo "Convenience aliases (Claude-tier shortcuts):"
+  echo "  claude-go-haiku      DeepSeek V4 Flash (fast, cheap)"
+  echo "  claude-go-sonnet     DeepSeek V4 Pro (balanced)"
+  echo "  claude-go-opus       Kimi K3 (smartest)"
   echo "  claude-go-pro        DeepSeek V4 Pro"
-  echo "  claude-go-flash      DeepSeek V4 Flash (default)"
+  echo "  claude-go-flash      DeepSeek V4 Flash"
   echo "  claude-go-kimi       Kimi K3"
   echo "  claude-go-glm        GLM 5.2"
   echo "  claude-go-qwen       Qwen 3.7 Max"
   echo "  claude-go-grok       Grok 4.5"
+  echo "  claude-go-dash       Open dashboard at :8787"
   echo ""
   echo "Model shortcuts (first arg):"
-  echo "  ds, dsf, flash       deepseek-v4-flash"
+  echo "  haiku                 claude-haiku-4.5 → deepseek-v4-flash"
+  echo "  sonnet                claude-sonnet-5  → deepseek-v4-pro"
+  echo "  opus                  claude-opus-4-8  → kimi-k3"
+  echo "  ds, dsf, flash        deepseek-v4-flash"
   echo "  dsp, ds-pro           deepseek-v4-pro"
   echo "  kimi, kimi-k3         kimi-k3"
   echo "  glm                   glm-5.2"
@@ -232,6 +256,76 @@ ccqwopus() {
 # Legacy alias
 claude-local() { ccornith "$@"; }
 
+# ── claude-bi — Claude Code via Bifrost (local LLM gateway) ────────
+# Bifrost routes requests to the right backend (OpenCode Go, OpenRouter,
+# local llama.cpp, LM Studio) based on model name.
+# Web UI: http://127.0.0.1:8085
+FCC_BIFROST_PORT="${FCC_BIFROST_PORT:-8096}"
+
+_ensure_bifrost_server() {
+  if lsof -i :8085 >/dev/null 2>&1; then
+    curl -s http://127.0.0.1:8085/health >/dev/null 2>&1 && return 0
+    echo "Bifrost running but not ready — waiting..." >&2
+    for i in $(seq 1 10); do
+      curl -s http://127.0.0.1:8085/health >/dev/null 2>&1 && return 0
+      sleep 1
+    done
+    return 1
+  fi
+  echo "Starting Bifrost on :8085..."
+  nohup "$HOME/.cache/bifrost/v1.6.5/bin/bifrost-http-0" \
+    -port 8085 -host 127.0.0.1 \
+    -app-dir "$HOME/Development/ai/local-llms/.bifrost" \
+    -log-level info \
+    > /tmp/bifrost.log 2>&1 & disown
+  for i in $(seq 1 20); do
+    if curl -s http://127.0.0.1:8085/health >/dev/null 2>&1; then
+      echo "Bifrost ready (${i}s)"; return 0
+    fi
+    sleep 1
+  done
+  echo "Bifrost failed to start within 20s — check /tmp/bifrost.log" >&2
+  return 1
+}
+
+_ensure_bifrost_fcc_proxy() {
+  if lsof -i :$FCC_BIFROST_PORT >/dev/null 2>&1; then
+    curl -s http://127.0.0.1:$FCC_BIFROST_PORT/health >/dev/null 2>&1 && return 0
+    echo "FCC proxy running but not ready — waiting..." >&2
+    for i in $(seq 1 10); do
+      curl -s http://127.0.0.1:$FCC_BIFROST_PORT/health >/dev/null 2>&1 && return 0
+      sleep 1
+    done
+  fi
+  echo "Starting FCC proxy for Bifrost on :$FCC_BIFROST_PORT..."
+  PORT=$FCC_BIFROST_PORT LM_STUDIO_BASE_URL="http://127.0.0.1:8085/v1" \
+    MODEL="lmstudio/bifrost-gateway" \
+    ENABLE_WEB_SERVER_TOOLS=true FCC_AUTO_INTERCEPT_WEB_TOOLS=true \
+    nohup fcc-server > /tmp/fcc-bifrost.log 2>&1 & disown
+  for i in $(seq 1 15); do
+    if curl -s http://127.0.0.1:$FCC_BIFROST_PORT/health >/dev/null 2>&1; then
+      echo "FCC Bifrost proxy ready (${i}s)"; break
+    fi
+    sleep 1
+  done
+}
+
+claude-bi() {
+  local model="${1:-deepseek-v4-flash}"
+  # If first arg is a claude flag, pass everything through
+  case "$model" in
+    -c|--continue|--resume|-p|--print|--help|-h) model="deepseek-v4-flash" ;;
+    *)
+      shift 2>/dev/null || true
+      ;;
+  esac
+  _ensure_bifrost_server
+  _ensure_bifrost_fcc_proxy
+  CLAUDE_LOCAL_MODEL=1 CLAUDE_LOCAL_MODEL_PORT=8085 \
+  PORT=$FCC_BIFROST_PORT fcc-claude --model "lmstudio/$model" \
+    --append-system-prompt-file "$HOME/.claude/contexts/local-agent.md" "$@"
+}
+
 # ── Claude Code via OmniRoute (AI gateway, free tiers + paid) ──────
 OMNIROUTE_PORT="${OMNIROUTE_PORT:-20128}"
 
@@ -273,6 +367,8 @@ ccstop() {
   [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Qwen FCC proxy stopped"
   pid=$(lsof -ti :$FCC_QWOPUS_PORT 2>/dev/null)
   [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Qwopus FCC proxy stopped"
+  pid=$(lsof -ti :$FCC_BIFROST_PORT 2>/dev/null)
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Bifrost FCC proxy stopped"
   # Kill all llama-servers
   pid=$(lsof -ti :8080 2>/dev/null | head -1)
   [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Qwen llama-server stopped"
@@ -282,6 +378,9 @@ ccstop() {
   [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Qwopus llama-server stopped"
   pid=$(lsof -ti :$HERMES_GEMMA_PORT 2>/dev/null | head -1)
   [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Gemma 4 llama-server stopped"
+  # Stop Bifrost
+  pid=$(lsof -ti :8085 2>/dev/null | head -1)
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "Bifrost server stopped"
   # Stop OmniRoute server
   omniroute stop 2>/dev/null && echo "OmniRoute server stopped"
 }
@@ -545,6 +644,29 @@ hermes-ds() {
   fi
   export DEEPSEEK_API_KEY="$key"
   /home/barrak/.local/bin/deepseek "$@"
+}
+
+hermes-bi() {
+  _ensure_bifrost_server
+  /home/barrak/.local/bin/bifrost "$@"
+}
+
+hermes-go() {
+  local key
+  key=$(grep -E '^OPENCODE_GO_API_KEY=' "$HOME/Development/ai/local-llms/.env" 2>/dev/null | sed 's/^OPENCODE_GO_API_KEY=//')
+  if [ -z "$key" ]; then
+    echo "Error: OPENCODE_GO_API_KEY not set in ~/Development/ai/local-llms/.env" >&2
+    return 1
+  fi
+  local config="$HOME/.hermes/profiles/opencode-go/config.yaml"
+  OPENCODE_GO_KEY="$key" python3 -c "
+import os, re
+key = os.environ['OPENCODE_GO_KEY']
+with open('$config') as f: c = f.read()
+c = re.sub(r'^  api_key:.*', f'  api_key: {key}', c, flags=re.MULTILINE)
+with open('$config', 'w') as f: f.write(c)
+"
+  /home/barrak/.local/bin/opencode-go "$@"
 }
 
 # ── Gemma 4 E4B server (3 GB, fits alongside other models) ──────

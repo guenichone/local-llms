@@ -3,3 +3,6 @@
 .env
 .claude/opencode-claude-proxy/settings.json
 __pycache__/
+
+# Bifrost gateway runtime state (SQLite DBs + WAL)
+.bifrost/
